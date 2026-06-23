@@ -34,19 +34,22 @@ import {
   estimateBrakeTorque,
   torqueToPowerHp,
   volumetricEfficiency,
+  displacementCc,
+  rotationalDragTorque,
   ENGINE_SPECS,
   getSpecById,
 } from './utils/enginePhysics';
 import { engineAudio } from './utils/engineAudio';
+import { holdTransientZero, smoothMetric } from './utils/telemetrySmoothing';
 import { ShieldAlert, Hammer } from 'lucide-react';
 
 const INITIAL_PARAMS: EngineParameters = {
   throttle: 0.20,
-  load: 2,
+  load: 0.8,
   fuelAirRatio: 1.0, // Lambda
   oilLevel: 90,
   ignitionTiming: 12, // BTDC degrees
-  hasLimiter: true,
+  hasLimiter: false,
   limiterRpm: 6800,
   hasNitrous: false,
   coolantPump: 0.6,
@@ -101,6 +104,18 @@ const INITIAL_CHALLENGE: ChallengeProgress = {
   message: '',
 };
 
+const createTelemetryPoint = (coolantTemp = 40): TelemetryPoint => ({
+  timeIndex: 0,
+  rpm: 0,
+  temp: coolantTemp,
+  torque: 0,
+  power: 0,
+  pressure: 1.0,
+  fuelFlow: 0,
+  efficiency: 0,
+  oilPressure: 0,
+});
+
 export default function App() {
   // Engine active conditions
   const [engineState, setEngineState] = useState<EngineState>(EngineState.OFF);
@@ -152,19 +167,14 @@ export default function App() {
   const logsRef = useRef<LogMessage[]>([]);
 
   // Telemetry buffer for real-time charting
-  const [liveStats, setLiveStats] = useState<TelemetryPoint>({
-    timeIndex: 0,
-    rpm: 0,
-    temp: 40,
-    torque: 0,
-    power: 0,
-    pressure: 1.0,
-    fuelFlow: 0,
-    efficiency: 0,
-    oilPressure: 0,
-  });
+  const [liveStats, setLiveStats] = useState<TelemetryPoint>(() => createTelemetryPoint());
   const [history, setHistory] = useState<TelemetryPoint[]>([]);
   const historyRef = useRef<TelemetryPoint[]>([]);
+  const displayStatsRef = useRef<TelemetryPoint>(createTelemetryPoint());
+  const pressurePeakRef = useRef<number>(1.0);
+  const fuelZeroSecondsRef = useRef<number>(0);
+  const efficiencyZeroSecondsRef = useRef<number>(0);
+  const crankDriveTorqueRef = useRef<number>(0);
   const scrollIndexRef = useRef<number>(0);
 
   // Add diagnostic logs helper
@@ -358,8 +368,29 @@ export default function App() {
         pistonForceTorque = calculatePistonTorque(cycleRad, effectivePressure, spec);
       }
 
+      const limiterTorqueScale = params.hasLimiter && curRpm > params.limiterRpm
+        ? 0.22 + 0.25 * Math.max(0, Math.sin(timestamp * 0.05))
+        : 1.0;
+      const combustionDriveAvailable =
+        isRunningSelfSustained &&
+        !cutoffRef.current &&
+        wearRef.current.sparkPlug > 10 &&
+        params.fuelAirRatio >= 0.62 &&
+        params.fuelAirRatio <= 1.45;
+      const meanBrakeTorque = combustionDriveAvailable
+        ? estimateBrakeTorque(curRpm, actualThrottle, params.fuelAirRatio, params.ignitionTiming, spec, wearRef.current, params.hasNitrous) * limiterTorqueScale
+        : 0;
+      const targetDriveTorque = meanBrakeTorque > 0 ? meanBrakeTorque + totalDecelFriction : 0;
+      const torqueResponseTau = 0.16 + spec.rotatingInertia * 0.65;
+      crankDriveTorqueRef.current = smoothMetric(crankDriveTorqueRef.current, targetDriveTorque, dt, {
+        timeConstant: torqueResponseTau,
+        maxDeltaPerSecond: spec.peakTorque * 18,
+      });
+
+      const pulseTrim = Math.max(-0.12, Math.min(0.12, pistonForceTorque / Math.max(1, spec.peakTorque * 12)));
       const externalLoadDrag = params.load;
-      const netTorque = pistonForceTorque + starterTorque - totalDecelFriction - externalLoadDrag;
+      const rotationalDamping = rotationalDragTorque(curRpm);
+      const netTorque = crankDriveTorqueRef.current * (1 + pulseTrim) + starterTorque - totalDecelFriction - externalLoadDrag - rotationalDamping;
 
       // 4. ANGULAR ROTATION ACCELERATION (spec-driven inertia)
       let angularVelocity = (curRpm * 2 * Math.PI) / 60;
@@ -473,10 +504,7 @@ export default function App() {
 
       // Representative steady-state brake torque at the current operating point
       // (stable, and consistent with the dyno estimator).
-      const targetBrake = isRunningSelfSustained
-        ? estimateBrakeTorque(newRpm, actualThrottle, params.fuelAirRatio, params.ignitionTiming, spec, wearRef.current, params.hasNitrous)
-        : 0;
-      torqueAvg += (targetBrake - torqueAvg) * Math.min(1, dt * 5);
+      torqueAvg += (Math.max(0, meanBrakeTorque) - torqueAvg) * Math.min(1, dt * 5);
 
       // Audio synthesis
       const activeRunningSound = engineStateRef.current === EngineState.RUNNING;
@@ -495,29 +523,84 @@ export default function App() {
 
       // Throttled React state telemetry updates
       throttledUpdateTimer += dt;
-      if (throttledUpdateTimer > 0.052) {
+      pressurePeakRef.current = Math.max(1.0, pressurePeakRef.current * Math.exp(-dt / 0.95), chamber.pressure);
+
+      if (throttledUpdateTimer > 0.095) {
         setStroke(strokeType);
 
         // Stable brake torque / power readout from the smoothed steady-state estimate.
+        const sampleDt = throttledUpdateTimer;
         const veNow = volumetricEfficiency(newRpm, spec);
         const displayTorque = Math.max(0, torqueAvg);
         const hp = torqueToPowerHp(displayTorque, newRpm);
-        const mlFlow = newRpm > 50 ? (newRpm / 1000) * actualThrottle * veNow * 0.05 * (params.hasNitrous ? 2.5 : 1.0) : 0;
+        const engineLiters = displacementCc(spec) / 1000;
+        const mlFlow = newRpm > 50 && isRunningSelfSustained
+          ? (newRpm / 1000) * (0.08 + actualThrottle) * veNow * engineLiters * 0.72 * (params.hasNitrous ? 2.5 : 1.0)
+          : 0;
+        const optTiming = 10 + newRpm / 280;
+        const timingQuality = Math.max(0.05, Math.exp(-Math.pow((params.ignitionTiming - optTiming) / 15, 2)));
+        const lambdaQuality = Math.max(0, 1.0 - Math.pow(params.fuelAirRatio - 0.92, 2) * 2.2);
+        const combustionQuality = isRunningSelfSustained && newRpm > 80
+          ? Math.round(Math.max(0, Math.min(100, 100 * lambdaQuality * timingQuality * (0.75 + 0.25 * veNow) * (wearRef.current.sparkPlug / 100) * limiterTorqueScale)))
+          : 0;
+
+        const heldFuel = holdTransientZero(displayStatsRef.current.fuelFlow, mlFlow, sampleDt, {
+          zeroHoldSeconds: 0.3,
+          zeroDecayTimeConstant: 0.75,
+          elapsedZeroSeconds: fuelZeroSecondsRef.current,
+        });
+        fuelZeroSecondsRef.current = heldFuel.elapsedZeroSeconds;
+
+        const heldEfficiency = holdTransientZero(displayStatsRef.current.efficiency, combustionQuality, sampleDt, {
+          zeroHoldSeconds: 0.45,
+          zeroDecayTimeConstant: 0.9,
+          elapsedZeroSeconds: efficiencyZeroSecondsRef.current,
+        });
+        efficiencyZeroSecondsRef.current = heldEfficiency.elapsedZeroSeconds;
+
+        const previousStats = displayStatsRef.current;
 
         const statPoint: TelemetryPoint = {
           timeIndex: scrollIndexRef.current++,
-          rpm: newRpm,
-          temp: tempRef.current,
-          torque: displayTorque,
-          power: hp,
-          pressure: chamber.pressure,
-          fuelFlow: mlFlow,
-          efficiency: chamber.efficiency,
-          oilPressure: oilPressureRef.current,
+          rpm: smoothMetric(previousStats.rpm, newRpm, sampleDt, {
+            timeConstant: 0.24,
+            maxDeltaPerSecond: spec.redlineRpm * 0.65,
+            deadband: 2,
+          }),
+          temp: smoothMetric(previousStats.temp, tempRef.current, sampleDt, { timeConstant: 0.9 }),
+          torque: smoothMetric(previousStats.torque, displayTorque, sampleDt, {
+            timeConstant: 0.34,
+            maxDeltaPerSecond: spec.peakTorque * 3.5,
+            deadband: 0.05,
+          }),
+          power: smoothMetric(previousStats.power, hp, sampleDt, {
+            timeConstant: 0.38,
+            maxDeltaPerSecond: Math.max(12, spec.peakTorque * 1.5),
+            deadband: 0.05,
+          }),
+          pressure: smoothMetric(previousStats.pressure, pressurePeakRef.current, sampleDt, {
+            timeConstant: 0.28,
+            maxDeltaPerSecond: 90,
+          }),
+          fuelFlow: smoothMetric(previousStats.fuelFlow, heldFuel.value, sampleDt, {
+            timeConstant: 0.44,
+            deadband: 0.0005,
+          }),
+          efficiency: Math.round(smoothMetric(previousStats.efficiency, heldEfficiency.value, sampleDt, {
+            timeConstant: 0.48,
+            maxDeltaPerSecond: 95,
+            deadband: 0.4,
+          })),
+          oilPressure: smoothMetric(previousStats.oilPressure, oilPressureRef.current, sampleDt, {
+            timeConstant: 0.24,
+            maxDeltaPerSecond: 12,
+            deadband: 0.02,
+          }),
         };
 
+        displayStatsRef.current = statPoint;
         setLiveStats(statPoint);
-        historyRef.current = [...historyRef.current, statPoint].slice(-45);
+        historyRef.current = [...historyRef.current, statPoint].slice(-72);
         setHistory(historyRef.current);
         setWear(wearRef.current);
         setGarage(garageRef.current);
@@ -645,11 +728,13 @@ export default function App() {
     lastTimeRef.current = 0;
     scrollIndexRef.current = 0;
     historyRef.current = [];
+    displayStatsRef.current = createTelemetryPoint(coolantTemp);
+    pressurePeakRef.current = 1.0;
+    fuelZeroSecondsRef.current = 0;
+    efficiencyZeroSecondsRef.current = 0;
+    crankDriveTorqueRef.current = 0;
     setHistory([]);
-    setLiveStats({
-      timeIndex: 0, rpm: 0, temp: coolantTemp, torque: 0,
-      power: 0, pressure: 1.0, fuelFlow: 0, efficiency: 0, oilPressure: 0,
-    });
+    setLiveStats(createTelemetryPoint(coolantTemp));
   };
 
   const handleCompleteRebuild = () => {

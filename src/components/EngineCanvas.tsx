@@ -5,6 +5,7 @@
 
 import React, { useRef, useEffect, useState, MouseEvent } from 'react';
 import { EngineState, StrokeType, ComponentWear } from '../types';
+import { advanceReadableCrankAngle, getReadableVisualRpm, strokeFromCrankAngle } from '../utils/engineVisuals';
 interface EngineCanvasProps {
   state: EngineState;
   stroke: StrokeType;
@@ -79,6 +80,8 @@ export default function EngineCanvas({
   const particlesRef = useRef<Particle[]>([]);
   const sparkTriggerRef = useRef<boolean>(false);
   const lastStateRef = useRef<EngineState>(state);
+  const lastRenderTimeRef = useRef<number>(0);
+  const visualAngleRef = useRef<number>(crankAngle);
   const [isDragging, setIsDragging] = useState(false);
 
   const W_WIDTH = 400;
@@ -135,7 +138,36 @@ export default function EngineCanvas({
     let frameId: number;
 
     const render = () => {
-      const { state, stroke, crankAngle, throttle, oilLevel, temperature, oilPressure, wear, nosActive, redlineRpm, rpm } = propsRef.current;
+      const {
+        state,
+        stroke: actualStroke,
+        crankAngle: physicalCrankAngle,
+        throttle,
+        oilLevel,
+        temperature,
+        oilPressure,
+        wear,
+        nosActive,
+        redlineRpm,
+        rpm,
+      } = propsRef.current;
+
+      const now = performance.now();
+      const dt = lastRenderTimeRef.current ? Math.min(0.05, (now - lastRenderTimeRef.current) / 1000) : 1 / 60;
+      lastRenderTimeRef.current = now;
+
+      const visualMotion = advanceReadableCrankAngle({
+        previousAngle: visualAngleRef.current,
+        physicalAngle: physicalCrankAngle,
+        rpm,
+        dt,
+        state,
+      });
+      visualAngleRef.current = visualMotion.angle;
+
+      const crankAngle = visualMotion.angle;
+      const stroke = visualMotion.mode === 'readable' ? strokeFromCrankAngle(crankAngle) : actualStroke;
+      const highRpmReadable = visualMotion.mode === 'readable';
 
       const C_x = CX + R_RADIUS * Math.sin(crankAngle);
       const C_y = CRANK_Y - R_RADIUS * Math.cos(crankAngle);
@@ -384,6 +416,39 @@ export default function EngineCanvas({
       // ==========================================
       // CRANKSHAFT AND FLYWHEEL
       // ==========================================
+      if (highRpmReadable) {
+        ctx.save();
+        ctx.setLineDash([4, 5]);
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(125, 211, 252, 0.28)';
+        ctx.beginPath();
+        ctx.arc(CX, CRANK_Y, R_RADIUS, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        [-0.55, -1.1].forEach((offset, index) => {
+          const ghostAngle = crankAngle + offset;
+          const gx = CX + R_RADIUS * Math.sin(ghostAngle);
+          const gy = CRANK_Y - R_RADIUS * Math.cos(ghostAngle);
+          const gdx = gx - CX;
+          const gPinY = gy - Math.sqrt(Math.max(0.1, CONROD_LEN * CONROD_LEN - gdx * gdx));
+          const gTopY = gPinY - 32;
+          ctx.globalAlpha = index === 0 ? 0.26 : 0.14;
+          ctx.strokeStyle = '#67e8f9';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(CX - pistonWidth / 2, gTopY, pistonWidth, pistonHeight);
+          ctx.beginPath();
+          ctx.moveTo(CX, gPinY);
+          ctx.lineTo(gx, gy);
+          ctx.stroke();
+          ctx.fillStyle = '#67e8f9';
+          ctx.beginPath();
+          ctx.arc(gx, gy, 5, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.restore();
+      }
+
       ctx.lineWidth = 4;
       ctx.strokeStyle = '#475569';
       ctx.fillStyle = '#334155';
@@ -942,12 +1007,22 @@ export default function EngineCanvas({
     setIsDragging(false);
   };
 
+  const showReadableMode = (state === EngineState.RUNNING || state === EngineState.STARTING) && rpm > 1400;
+  const visualSlowdown = showReadableMode ? rpm / Math.max(1, getReadableVisualRpm(rpm)) : 1;
+
   return (
     <div className="relative flex flex-col items-center bg-gray-950 p-4 rounded-2xl border border-gray-800 shadow-2xl h-[530px] justify-center">
       <div className="absolute top-4 left-6 flex items-center space-x-1.5 bg-gray-900/90 text-[10px] font-mono px-2 py-1 rounded border border-gray-800 backdrop-blur z-10 text-gray-400">
         <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
         <span>交互式物理剖面</span>
       </div>
+
+      {showReadableMode && (
+        <div className="absolute top-4 right-6 bg-sky-950/90 text-[10px] font-mono px-2 py-1 rounded border border-sky-800/60 backdrop-blur z-10 text-sky-200 text-right">
+          <div className="font-bold text-cyan-300">高转清晰模式</div>
+          <div className="text-sky-300/80">视觉慢放 ×{visualSlowdown.toFixed(0)}</div>
+        </div>
+      )}
 
       <div className="absolute bottom-4 right-6 bg-gray-900/90 px-2 py-1 rounded text-[10px] font-mono text-gray-500 border border-gray-800 pointer-events-none">
         提示：支持手势旋转曲轴 / 轻点火花塞点火

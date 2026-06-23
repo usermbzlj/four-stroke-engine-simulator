@@ -10,6 +10,7 @@ import { ComponentWear, EngineSpec } from '../types';
 // ---------------------------------------------------------------------------
 export const CRANK_RADIUS = 36;       // r (px, drawing only)
 export const CONROD_LENGTH = 105;     // l (px, drawing only)
+export const MAX_THROTTLE = 1.5;      // 100% butterfly + race overdrive / ram-air enrichment range
 
 // ---------------------------------------------------------------------------
 // Selectable engine builds. Swapping a spec reconfigures the entire simulation.
@@ -323,4 +324,8 @@ export function estimateBrakeTorque(
 export function torqueToPowerHp(torqueNm: number, rpm: number): number {
   // HP = T(Nm) * RPM / 7127
   return (torqueNm * rpm) / 7127;
+}
+
+export function rotationalDragTorque(rpm: number): number {
+  return ((Math.max(0, rpm) * 2 * Math.PI) / 60) * 0.006;
 }

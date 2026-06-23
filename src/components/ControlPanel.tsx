@@ -4,6 +4,7 @@
  */
 
 import { EngineState, EngineParameters } from '../types';
+import { MAX_THROTTLE } from '../utils/enginePhysics';
 import { Play, Square, Settings, Volume2, VolumeX, Flame, RotateCcw } from 'lucide-react';
 
 interface ControlPanelProps {
@@ -150,18 +151,25 @@ export default function ControlPanel({
               <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
               油门阀开度 (Throttle)
             </span>
-            <span className="text-red-400 font-bold">{Math.round(params.throttle * 100)}%</span>
+            <span className={`font-bold ${params.throttle > 1 ? 'text-amber-300' : 'text-red-400'}`}>
+              {Math.round(params.throttle * 100)}%{params.throttle > 1 ? ' 超开度' : ''}
+            </span>
           </div>
           <input
             type="range"
             min="0"
-            max="1.0"
+            max={MAX_THROTTLE}
             step="0.01"
             value={params.throttle}
             disabled={isDead}
             onChange={(e) => onUpdateParams({ throttle: parseFloat(e.target.value) })}
             className="w-full h-1.5 bg-gray-950 rounded-lg appearance-none cursor-pointer accent-red-500 disabled:opacity-40"
           />
+          <div className="flex justify-between text-[9px] text-gray-500 font-mono">
+            <span>关闭</span>
+            <span>100% 机械全开</span>
+            <span>150% 赛用进气</span>
+          </div>
         </div>
 
         {/* Load slider */}

@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "node -e \"const fs=require('fs');const p=require('path');['dist','server.js'].forEach(f=>{try{fs.rmSync(p.resolve(f),{recursive:true,force:true})}catch{}})\"",
+    "test": "tsx src/utils/telemetrySmoothing.test.ts && tsx src/utils/enginePhysics.test.ts && tsx src/utils/engineVisuals.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
