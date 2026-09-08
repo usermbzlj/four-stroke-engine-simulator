@@ -4,13 +4,17 @@
  */
 
 import { ComponentWear, EngineSpec } from '../types';
+import { COMBUSTION, FRICTION, THROTTLE } from './constants';
 
 // ---------------------------------------------------------------------------
 // Geometry constants (visual px scale kept for the canvas; physics uses mm/m)
 // ---------------------------------------------------------------------------
-export const CRANK_RADIUS = 36;       // r (px, drawing only)
-export const CONROD_LENGTH = 105;     // l (px, drawing only)
-export const MAX_THROTTLE = 1.5;      // 100% butterfly + race overdrive / ram-air enrichment range
+export const CRANK_RADIUS = 36; // r (px, drawing only)
+export const CONROD_LENGTH = 105; // l (px, drawing only)
+export const MAX_THROTTLE = 1.5; // 100% butterfly + race overdrive / ram-air enrichment range
+
+/** Pluggable random source so stochastic physics stays deterministic in tests. */
+export type Rng = () => number;
 
 // ---------------------------------------------------------------------------
 // Selectable engine builds. Swapping a spec reconfigures the entire simulation.
@@ -97,8 +101,8 @@ export function getPistonDisplacement(angleRad: number): number {
  */
 export function calculatePistonTorque(angleRad: number, cylinderPressureBar: number, spec: EngineSpec): number {
   const theta = angleRad % (2 * Math.PI);
-  const r_m = spec.stroke / 2000;                 // crank radius in m (= stroke/2)
-  const l_m = (spec.stroke / 2000) * 1.85;        // typical conrod ratio l/r ≈ 1.85
+  const r_m = spec.stroke / 2000; // crank radius in m (= stroke/2)
+  const l_m = (spec.stroke / 2000) * 1.85; // typical conrod ratio l/r ≈ 1.85
   const area = pistonAreaM2(spec);
 
   // gauge pressure acting on the piston (subtract atmospheric)
@@ -118,7 +122,7 @@ export function calculatePistonTorque(angleRad: number, cylinderPressureBar: num
 // ---------------------------------------------------------------------------
 export function smoothThrottle(actual: number, commanded: number, dt: number): number {
   // First-order lag; ~90ms to settle. Snappier when closing (engine braking realism).
-  const tau = commanded < actual ? 0.05 : 0.09;
+  const tau = commanded < actual ? THROTTLE.closingTau : THROTTLE.openingTau;
   const alpha = 1 - Math.exp(-dt / tau);
   return actual + (commanded - actual) * alpha;
 }
@@ -150,12 +154,21 @@ export function volumetricEfficiency(rpm: number, spec: EngineSpec): number {
 // ---------------------------------------------------------------------------
 export function oilPressureBar(rpm: number, oilLevel: number, oilTemp: number, wear: ComponentWear): number {
   if (rpm < 30) return 0;
-  const pumpFlow = Math.min(1, rpm / 3000);                 // saturates ~3000rpm
-  const supply = oilLevel / 100;                            // not enough oil = no pressure
+  const pumpFlow = Math.min(1, rpm / 3000); // saturates ~3000rpm
+  const supply = oilLevel / 100; // not enough oil = no pressure
   const hotThinning = Math.max(0.45, 1 - Math.max(0, oilTemp - 95) * 0.006); // hot oil = thinner
   const bearingClearance = 0.6 + 0.4 * (wear.conrodBearings / 100) * (wear.crankshaftJournal / 100);
   const raw = 5.2 * pumpFlow * supply * hotThinning * bearingClearance;
   return Math.max(0, Math.min(6.5, raw));
+}
+
+export interface ChamberState {
+  pressure: number;
+  temp: number;
+  ignited: boolean;
+  efficiency: number;
+  knockSeverity: number;
+  misfire: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,8 +185,9 @@ export function getChamberState(
   rpm: number,
   spec: EngineSpec,
   cylinderTemp: number,
-  choke: number
-): { pressure: number; temp: number; ignited: boolean; efficiency: number; knockSeverity: number; misfire: boolean } {
+  choke: number,
+  rng: Rng = Math.random
+): ChamberState {
   const thetaDeg = ((angleRad * 180) / Math.PI) % 720;
   const pistonHeightFactor = getPistonDisplacement(angleRad) / (2 * CRANK_RADIUS); // 0..1
 
@@ -212,30 +226,30 @@ export function getChamberState(
     // Cold-start enrichment (choke) widens the rich limit. Effective lambda seen by flame:
     const effLambda = lambda - choke * 0.18;
 
-    const isWithinFlammability = effLambda >= 0.62 && effLambda <= 1.45;
+    const isWithinFlammability = effLambda >= COMBUSTION.lambdaRich && effLambda <= COMBUSTION.lambdaLean;
     let misfireChance = 0;
-    if (effLambda < 0.78) misfireChance = (0.78 - effLambda) / (0.78 - 0.62);
-    else if (effLambda > 1.22) misfireChance = (effLambda - 1.22) / (1.45 - 1.22);
+    if (effLambda < 0.78) misfireChance = (0.78 - effLambda) / (0.78 - COMBUSTION.lambdaRich);
+    else if (effLambda > 1.22) misfireChance = (effLambda - 1.22) / (COMBUSTION.lambdaLean - 1.22);
 
-    const isMisfiredByFuel = Math.random() < misfireChance;
+    const isMisfiredByFuel = rng() < misfireChance;
     const hasFuel = charge > 0.01 && isWithinFlammability && !isMisfiredByFuel;
 
-    if (isRunning && hasFuel && wear.sparkPlug > 10) {
+    if (isRunning && hasFuel && wear.sparkPlug > COMBUSTION.minSparkPlug) {
       ignited = true;
 
       // MBT timing scales with speed (more advance needed at high rpm).
-      const optTiming = 10 + rpm / 280;
+      const optTiming = COMBUSTION.optTimingBase + rpm / COMBUSTION.optTimingRpmSlope;
       const timingError = ignitionTiming - optTiming;
       const timingEfficiencyFactor = Math.max(0.15, Math.exp(-Math.pow(timingError / 15, 2)));
-      const lambdaEfficiency = Math.max(0, 1.0 - Math.pow(effLambda - 0.92, 2) * 2.2);
+      const lambdaEfficiency = Math.max(0, 1.0 - Math.pow(effLambda - COMBUSTION.lambdaPower, 2) * 2.2);
 
-      const baseEfficiency = 0.40 * lambdaEfficiency * timingEfficiencyFactor * (0.85 + 0.15 * ve);
+      const baseEfficiency = 0.4 * lambdaEfficiency * timingEfficiencyFactor * (0.85 + 0.15 * ve);
       efficiency = Math.max(0.04, baseEfficiency);
 
       // --- Knock model (temperature & CR dependent) ---
       // Hotter cylinders and higher compression ratios are far more knock-prone.
-      const thermalKnock = Math.max(0, (cylinderTemp - 95) / 70);   // grows once hot
-      const crKnock = Math.max(0, (baseCR - 9.5) / 4);              // race CR knocks easier
+      const thermalKnock = Math.max(0, (cylinderTemp - 95) / 70); // grows once hot
+      const crKnock = Math.max(0, (baseCR - 9.5) / 4); // race CR knocks easier
       if (timingError > 4 || thermalKnock > 0.2 || crKnock > 0.2) {
         const advanceTerm = Math.max(0, (timingError - 4) / 15);
         knockSeverity = Math.min(
@@ -247,8 +261,7 @@ export function getChamberState(
       }
 
       const knockPressureBonus = 1.0 + knockSeverity * 0.45;
-      const energyMultiplier =
-        charge * (hasNitrous ? 2.6 : 1.0) * timingEfficiencyFactor * (baseCR / 9.5) * 1.05;
+      const energyMultiplier = charge * (hasNitrous ? 2.6 : 1.0) * timingEfficiencyFactor * (baseCR / 9.5) * 1.05;
 
       // Burn curve (mass fraction burned approximation)
       let combustionFactor: number;
@@ -301,10 +314,10 @@ export function estimateBrakeTorque(
   const ve = volumetricEfficiency(rpm, spec);
   const ringSealing = 0.3 + 0.7 * (wear.pistonRings / 100) * (wear.cylinderWall / 100) * (wear.valves / 100);
 
-  const optTiming = 10 + rpm / 280;
+  const optTiming = COMBUSTION.optTimingBase + rpm / COMBUSTION.optTimingRpmSlope;
   const timingError = ignitionTiming - optTiming;
   const timingFactor = Math.max(0.15, Math.exp(-Math.pow(timingError / 15, 2)));
-  const lambdaFactor = Math.max(0, 1.0 - Math.pow(lambda - 0.92, 2) * 2.2);
+  const lambdaFactor = Math.max(0, 1.0 - Math.pow(lambda - COMBUSTION.lambdaPower, 2) * 2.2);
 
   // Indicated torque ~ peakTorque * VE * load factors.
   const indicated =
@@ -327,5 +340,5 @@ export function torqueToPowerHp(torqueNm: number, rpm: number): number {
 }
 
 export function rotationalDragTorque(rpm: number): number {
-  return ((Math.max(0, rpm) * 2 * Math.PI) / 60) * 0.006;
+  return ((Math.max(0, rpm) * 2 * Math.PI) / 60) * FRICTION.rotationalDamping;
 }

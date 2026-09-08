@@ -21,6 +21,7 @@
 - **测功机 Dyno**：全转速域扫描，绘制扭矩 / 马力双曲线。
 - **信用点经济 + 积分系统**：跑 Dyno、过挑战赚取 CR / 积分，用于局部维修与完整大修。
 - **ECU 调校预设**：保存 / 载入空燃比、点火角、限速等参数组合。
+- **本地存档**：信用点、积分、累计工时、挑战最佳成绩、调校预设自动持久化到 `localStorage`，刷新不丢失。
 
 ### 视听
 - **Canvas 实时剖面渲染**：活塞、连杆、曲轴、气门、火花塞、粒子特效（进气喷雾 / 燃烧火焰 / 排气烟）、转速表 / 水温 / 油压仪表群。
@@ -67,20 +68,65 @@ Windows 用户可直接双击 `start.bat` 一键安装依赖并启动。
 
 ## 📁 项目结构
 
+代码按「纯仿真内核 / React 桥接层 / UI 组件」三层解耦：
+
 ```
 src/
-├── App.tsx                  # 主应用 + 60fps 物理积分循环 + 玩法编排
-├── types.ts                 # 类型定义
+├── App.tsx                     # 仅负责组合各面板 + 编排玩法（无物理逻辑）
+├── types.ts                    # 共享类型定义
+│
+├── engine/                     # ⚙️ 纯 TypeScript 仿真内核（无 React / DOM 依赖，可单测）
+│   ├── index.ts                #   统一出口（barrel）
+│   ├── constants.ts            #   集中式调参常量（替代散落的魔法数字）
+│   ├── physics.ts              #   运动学 / 热力学 / VE 与扭矩模型 + 发动机规格
+│   ├── simulation.ts           #   逐帧积分器 stepEngine() + 状态结构 + 事件流
+│   ├── gameplay.ts             #   挑战判定、Dyno 扫描、奖励计算
+│   ├── persistence.ts          #   localStorage 存档读写
+│   └── *.test.ts               #   内核单元测试
+│
+├── hooks/
+│   └── useEngineSimulation.ts  # 🔌 React 桥接：拥有 60fps rAF 循环，将内核事件
+│                               #     转为日志/声浪/状态，并计算平滑显示遥测
+│
 ├── components/
-│   ├── EngineCanvas.tsx     # Canvas 剖面渲染 + 仪表群
+│   ├── EngineCanvas.tsx        # Canvas 剖面：仅持有 refs / rAF 调度 / 指针交互
+│   ├── engineCanvasRenderer.ts #   纯 2D 绘制层（背景/缸体/曲轴/活塞/仪表…分层函数）
+│   ├── engineCanvasParticles.ts#   粒子系统（进气喷雾/火焰/废气/爆炸碎片）
 │   ├── TelemetryDashboard.tsx  # 实时遥测仪表盘
-│   ├── ControlPanel.tsx     # 参数控制台
-│   ├── WearTracker.tsx      # 磨损诊断与大修
-│   ├── DynoPanel.tsx        # 测功机拉力曲线
-│   └── ChallengePanel.tsx   # 挑战任务 / 调校车库
+│   ├── ControlPanel.tsx        # 参数控制台
+│   ├── WearTracker.tsx         # 磨损诊断与大修
+│   ├── DynoPanel.tsx           # 测功机拉力曲线
+│   └── ChallengePanel.tsx      # 挑战任务 / 调校车库
+│
 └── utils/
-    ├── enginePhysics.ts     # 发动机规格 + 热力学 + 扭矩模型
-    └── engineAudio.ts       # Web Audio 声浪合成
+    ├── engineAudio.ts          # Web Audio 声浪合成（持有 AudioContext 图）
+    ├── engineAudioParams.ts    #   纯声学参数公式（频率/增益/包络，可单测）
+    ├── engineVisuals.ts        # 高转「清晰慢放」视觉角度推进
+    └── telemetrySmoothing.ts   # 遥测 EMA 平滑 / 瞬时归零保持
+```
+
+### 架构要点
+
+- **物理与框架解耦**：全部物理都在 `engine/` 里，是不依赖 React/DOM 的纯函数。
+  `stepEngine(state, params, spec, dt, timestamp, rng)` 接收完整状态、返回**全新状态**
+  与一组领域事件（状态切换、日志、声浪触发、故障），因此可以脱离浏览器直接单测。
+- **可注入随机源**：失火、敲缸等随机过程通过可注入的 `rng` 实现，运行时用 `Math.random`，
+  测试时用固定值以保证确定性。
+- **桥接层只做副作用**：`useEngineSimulation` 负责 rAF 调度、把事件翻译成日志/声音、
+  以及计算用于显示的平滑遥测；`App.tsx` 只剩组合与玩法编排。
+- **绘制与发声同样分层**：Canvas 的绘制逻辑被抽到 `engineCanvasRenderer.ts` 的一组
+  分层纯函数（每帧只传入一个 `EngineScene`），组件本身仅保留 refs / rAF / 指针交互；
+  声浪的「调参公式」抽到纯模块 `engineAudioParams.ts`，与持有 `AudioContext` 的
+  `engineAudio.ts` 分离，因此频率/增益/包络都可单测。
+
+## 🧪 开发脚本
+
+```bash
+npm run dev      # 启动开发服务器
+npm run build    # 生产构建
+npm run preview  # 预览构建产物
+npm run lint     # TypeScript 类型检查 (tsc --noEmit)
+npm test         # 运行 src/**/*.test.ts 全部单元测试
 ```
 
 ## 📄 License

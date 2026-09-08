@@ -3,6 +3,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import {
+  airRushGain,
+  blockFilterFreq,
+  bodyToneFreq,
+  bodyToneGain,
+  bodyToneHarmonicFreq,
+  combustionShape,
+  exhaustPulseShape,
+  fanGain,
+  firingPeriod,
+  makeDistortionCurve,
+  starterFreq,
+} from './engineAudioParams';
+
 class EngineSoundManager {
   private ctx: AudioContext | null = null;
   private mainGain: GainNode | null = null;
@@ -174,31 +188,26 @@ class EngineSoundManager {
     const now = this.ctx.currentTime;
 
     // Low oil density / high damage creates metallic high-pitch filter changes
-    const filterFreq = 300 + rpm * 0.05 + damageLevel * 1.5;
     if (this.blockFilter) {
-      this.blockFilter.frequency.setTargetAtTime(Math.min(2000, filterFreq), now, 0.1);
+      this.blockFilter.frequency.setTargetAtTime(blockFilterFreq(rpm, damageLevel), now, 0.1);
     }
 
     // 1. Starter Whine
     if (isStarting) {
       this.starterGain?.gain.setTargetAtTime(0.18, now, 0.05);
-      this.starterOsc?.frequency.setTargetAtTime(150 + rpm * 0.4, now, 0.1);
+      this.starterOsc?.frequency.setTargetAtTime(starterFreq(rpm), now, 0.1);
     } else {
       this.starterGain?.gain.setTargetAtTime(0, now, 0.1);
     }
 
     // 2. Engine body tone — low rumble bed under the discrete exhaust pulses.
     if (isRunning && rpm > 50) {
-      const baseFreq = rpm / 60;
-      this.cylinderOsc1?.frequency.setTargetAtTime(baseFreq, now, 0.05);
-      this.cylinderOsc2?.frequency.setTargetAtTime(baseFreq * 2 + 1, now, 0.05);
-      const targetVolume = 0.035 + throttle * 0.06 + damageLevel * 0.0006;
-      this.cylinderGain?.gain.setTargetAtTime(targetVolume, now, 0.05);
+      this.cylinderOsc1?.frequency.setTargetAtTime(bodyToneFreq(rpm), now, 0.05);
+      this.cylinderOsc2?.frequency.setTargetAtTime(bodyToneHarmonicFreq(rpm), now, 0.05);
+      this.cylinderGain?.gain.setTargetAtTime(bodyToneGain(throttle, damageLevel), now, 0.05);
 
       // 2b. Schedule discrete combustion pulses at the firing frequency.
-      // A 4-stroke single fires once every 2 revolutions => f = rpm/120 (Hz).
-      const firingHz = rpm / 120;
-      const period = 1 / Math.max(1, firingHz);
+      const period = firingPeriod(rpm);
       if (this.nextPulseTime < now) this.nextPulseTime = now + 0.02;
       // Schedule a little ahead to keep cadence tight without flooding.
       let guard = 0;
@@ -214,16 +223,14 @@ class EngineSoundManager {
 
     // 3. Air Rush (Induction) — louder with throttle (butterfly whoosh)
     if (isRunning && this.airGain) {
-      const airTarget = (0.012 + throttle * 0.06) * (rpm / 4000);
-      this.airGain.gain.setTargetAtTime(Math.min(0.1, airTarget), now, 0.1);
+      this.airGain.gain.setTargetAtTime(airRushGain(rpm, throttle), now, 0.1);
     } else {
       this.airGain?.gain.setTargetAtTime(0, now, 0.15);
     }
 
     // 4. Cooling fan airflow
     if (this.fanGain) {
-      const fanTarget = Math.max(0, Math.min(0.05, fanLevel * 0.05 + Math.max(0, cylinderTemperature - 90) * 0.0006));
-      this.fanGain.gain.setTargetAtTime(fanTarget, now, 0.2);
+      this.fanGain.gain.setTargetAtTime(fanGain(fanLevel, cylinderTemperature), now, 0.2);
     }
   }
 
@@ -235,15 +242,13 @@ class EngineSoundManager {
 
     const osc = this.ctx.createOscillator();
     osc.type = 'triangle';
-    const pitch = 60 + rpm * 0.02 + Math.random() * 6;
-    osc.frequency.setValueAtTime(pitch * 1.6, when);
-    osc.frequency.exponentialRampToValueAtTime(Math.max(20, pitch * 0.7), when + 0.05);
+    const { startFreq, endFreq, peakGain, decay } = exhaustPulseShape(rpm, throttle, damageLevel, Math.random());
+    osc.frequency.setValueAtTime(startFreq, when);
+    osc.frequency.exponentialRampToValueAtTime(endFreq, when + 0.05);
 
     const g = this.ctx.createGain();
-    const peak = (0.05 + throttle * 0.14) * (1 + damageLevel * 0.004);
-    const decay = Math.max(0.025, 6 / (rpm + 60));
     g.gain.setValueAtTime(0.0001, when);
-    g.gain.exponentialRampToValueAtTime(peak, when + 0.004);
+    g.gain.exponentialRampToValueAtTime(peakGain, when + 0.004);
     g.gain.exponentialRampToValueAtTime(0.0001, when + decay);
 
     osc.connect(g);
@@ -262,7 +267,7 @@ class EngineSoundManager {
     osc.frequency.setValueAtTime(140 + Math.random() * 120, now);
     osc.frequency.exponentialRampToValueAtTime(50, now + 0.08);
     const shaper = this.ctx.createWaveShaper();
-    shaper.curve = this.makeDistortionCurve(80);
+    shaper.curve = makeDistortionCurve(80);
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.22, now);
     g.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
@@ -287,14 +292,12 @@ class EngineSoundManager {
     
     // Add distortion for power!
     const distortion = this.ctx.createWaveShaper();
-    distortion.curve = this.makeDistortionCurve(40);
+    distortion.curve = makeDistortionCurve(40);
     distortion.oversample = '4x';
 
     const gainNode = this.ctx.createGain();
-    const peakGain = 0.18 + (throttle * 0.32); // throttle increases boom!
+    const { peakGain, decay: decayDuration } = combustionShape(rpm, throttle);
     gainNode.gain.setValueAtTime(peakGain, now);
-    // Fires faster at high RPM
-    const decayDuration = Math.max(0.03, 10 / (rpm + 50)); 
     gainNode.gain.exponentialRampToValueAtTime(0.001, now + decayDuration);
 
     combustionOsc.connect(distortion);
@@ -312,18 +315,6 @@ class EngineSoundManager {
     if (isKnocking) {
       this.triggerMetalKling(decayDuration);
     }
-  }
-
-  private makeDistortionCurve(amount: number) {
-    const k = typeof amount === 'number' ? amount : 50;
-    const n_samples = 44100;
-    const curve = new Float32Array(n_samples);
-    const deg = Math.PI / 180;
-    for (let i = 0; i < n_samples; ++i) {
-      const x = (i * 2) / n_samples - 1;
-      curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
-    }
-    return curve;
   }
 
   private triggerMetalKling(decayDuration: number) {
@@ -384,7 +375,7 @@ class EngineSoundManager {
 
     // Distortion
     const shaper = this.ctx.createWaveShaper();
-    shaper.curve = this.makeDistortionCurve(100);
+    shaper.curve = makeDistortionCurve(100);
 
     noiseOsc.connect(shaper);
     shaper.connect(gainNode);

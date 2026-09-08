@@ -1,14 +1,14 @@
 {
-  "name": "react-example",
+  "name": "four-stroke-engine-simulator",
   "private": true,
-  "version": "0.0.0",
+  "version": "4.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "node -e \"const fs=require('fs');const p=require('path');['dist','server.js'].forEach(f=>{try{fs.rmSync(p.resolve(f),{recursive:true,force:true})}catch{}})\"",
-    "test": "tsx src/utils/telemetrySmoothing.test.ts && tsx src/utils/enginePhysics.test.ts && tsx src/utils/engineVisuals.test.ts",
+    "test": "node scripts/run-tests.mjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -16,8 +16,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "lucide-react": "^0.546.0",
     "react": "^19.0.1",
-    "react-dom": "^19.0.1",
-    "motion": "^12.23.24"
+    "react-dom": "^19.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

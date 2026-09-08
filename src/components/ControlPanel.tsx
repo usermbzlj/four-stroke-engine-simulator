@@ -4,7 +4,7 @@
  */
 
 import { EngineState, EngineParameters } from '../types';
-import { MAX_THROTTLE } from '../utils/enginePhysics';
+import { MAX_THROTTLE } from '../engine';
 import { Play, Square, Settings, Volume2, VolumeX, Flame, RotateCcw } from 'lucide-react';
 
 interface ControlPanelProps {
