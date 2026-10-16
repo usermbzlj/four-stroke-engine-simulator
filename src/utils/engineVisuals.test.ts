@@ -4,6 +4,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { it } from 'vitest';
 import { EngineState, StrokeType } from '../types';
 import {
   advanceReadableCrankAngle,
@@ -15,14 +16,14 @@ const nearlyEqual = (actual: number, expected: number, tolerance = 1e-6) => {
   assert.ok(Math.abs(actual - expected) <= tolerance, `expected ${actual} to be within ${tolerance} of ${expected}`);
 };
 
-{
+it("case 1", () => {
   nearlyEqual(getReadableVisualRpm(0), 0);
   nearlyEqual(getReadableVisualRpm(900), 900);
   assert.ok(getReadableVisualRpm(8000) <= 360, 'high-rpm display should be capped for readability');
   assert.ok(getReadableVisualRpm(8000) > 0, 'high-rpm display should keep moving');
-}
+});
 
-{
+it("case 2", () => {
   const physicalAngle = Math.PI * 1.3;
   const result = advanceReadableCrankAngle({
     previousAngle: 0,
@@ -34,9 +35,9 @@ const nearlyEqual = (actual: number, expected: number, tolerance = 1e-6) => {
 
   assert.equal(result.mode, 'synced');
   nearlyEqual(result.angle, physicalAngle);
-}
+});
 
-{
+it("case 3", () => {
   const result = advanceReadableCrankAngle({
     previousAngle: 0,
     physicalAngle: Math.PI * 3,
@@ -49,11 +50,11 @@ const nearlyEqual = (actual: number, expected: number, tolerance = 1e-6) => {
   assert.equal(result.mode, 'readable');
   assert.ok(result.angle <= maxFrameAdvance + 1e-6, 'high-rpm display should advance by capped visual speed');
   assert.ok(result.slowdownRatio > 10, 'mode should report a meaningful visual slowdown ratio');
-}
+});
 
-{
+it("case 4", () => {
   assert.equal(strokeFromCrankAngle(0), StrokeType.INTAKE);
   assert.equal(strokeFromCrankAngle(Math.PI + 0.01), StrokeType.COMPRESSION);
   assert.equal(strokeFromCrankAngle(Math.PI * 2 + 0.01), StrokeType.POWER);
   assert.equal(strokeFromCrankAngle(Math.PI * 3 + 0.01), StrokeType.EXHAUST);
-}
+});

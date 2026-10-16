@@ -1,67 +1,60 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * The per-step integrator.
+ *
+ * `stepEngine` is pure: it takes the whole world (state, controls, build, tune)
+ * and returns a brand-new state plus the domain events that happened. No React,
+ * no DOM, no `performance.now()` — which is what lets the dyno re-use it
+ * headlessly and lets the tests drive it deterministically.
  */
 
-import { ComponentWear, EngineParameters, EngineSpec, EngineState, StrokeType } from '../types';
-import {
+import type { ComponentWear, EngineParameters, EngineSpec, TuneMap, TuneSample } from '../types';
+import { EngineState, StrokeType } from '../types';
+import type {
   ChamberState,
-  Rng,
+  Rng} from './physics';
+import {
   calculatePistonTorque,
+  effectiveOilLevel,
   estimateBrakeTorque,
   getChamberState,
   oilPressureBar,
   rotationalDragTorque,
   smoothThrottle,
 } from './physics';
-import { smoothMetric } from '../utils/telemetrySmoothing';
-import {
-  COMBUSTION,
-  DRIVE,
-  FRICTION,
-  INTEGRATOR,
-  LIMITER,
-  RPM,
-  STARTER,
-  THERMAL,
-  WEAR,
-} from './constants';
+import { sampleTune, tuneBreakpoints } from './tune';
+import { smoothMetric } from './smoothing';
+import { COMBUSTION, DRIVE, FRICTION, IDLE, INTEGRATOR, LIMITER, RPM, SIM, STARTER, THERMAL, WEAR } from './constants';
 
 const TWO_PI = Math.PI * 2;
 const FOUR_PI = Math.PI * 4;
 
-/**
- * Complete mutable physics state of the engine. This is intentionally a plain
- * data object (no React, no DOM) so the integrator is pure and unit-testable.
- */
+const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+const clamp01 = (v: number): number => clamp(v, 0, 1);
+
+/** Complete mutable physics state of the engine (plain data, no framework). */
 export interface EngineSimState {
-  /** Engine lifecycle state. */
   engineState: EngineState;
   /** Crank angle in radians within the 0..4π four-stroke cycle. */
   angle: number;
-  /** Engine speed (RPM). */
   rpm: number;
-  /** Coolant / cylinder temperature (°C). */
   coolantTemp: number;
-  /** Oil temperature, lags coolant (°C). */
   oilTemp: number;
-  /** Oil pressure (bar). */
   oilPressure: number;
-  /** Butterfly position after inertia lag (0..MAX_THROTTLE). */
+  /** Butterfly position after inertia lag. */
   actualThrottle: number;
-  /** Component health. */
   wear: ComponentWear;
   /** Smoothed crank-drive torque the combustion contributes (Nm). */
   crankDriveTorque: number;
+  /** Wind-up term of the idle-air controller. */
+  idleIntegral: number;
 
   // --- transient flags / edge-detection helpers ---
-  /** Starter motor engaged this step. */
   cranking: boolean;
-  /** Ignition hard cutoff (kill switch). */
   ignitionCut: boolean;
-  /** Edge-detect: spark already fired in the current window. */
   sparkFired: boolean;
-  /** Edge-detect: backfire already played in the current limiter window. */
   backfired: boolean;
 }
 
@@ -75,7 +68,7 @@ export type EngineEvent =
   | { kind: 'explosion' }
   | { kind: 'failure'; state: EngineState; reason: string };
 
-/** Read-only outputs a step computes for display / audio (not persisted in state). */
+/** Read-only outputs a step computes for display / audio. */
 export interface StepDerived {
   stroke: StrokeType;
   chamber: ChamberState;
@@ -83,16 +76,31 @@ export interface StepDerived {
   meanBrakeTorque: number;
   /** Instantaneous gas-pressure torque on the crankpin (Nm). */
   pistonForceTorque: number;
-  /** Rev-limiter torque scaling currently applied (0..1). */
   limiterTorqueScale: number;
-  /** True while the engine is self-sustaining or trying to (RUNNING/STARTING). */
   selfSustained: boolean;
+  /** Air actually admitted — the greater of the pedal and the idle bypass. */
+  effectiveThrottle: number;
+  /** Idle-air valve opening currently commanded. */
+  idleBypass: number;
+  /** Ignition/lambda the ECU map produced at this RPM. */
+  tune: TuneSample;
 }
 
 export interface StepResult {
   state: EngineSimState;
   derived: StepDerived;
   events: EngineEvent[];
+}
+
+export interface StepInput {
+  state: EngineSimState;
+  params: EngineParameters;
+  spec: EngineSpec;
+  tune: TuneMap;
+  dt: number;
+  /** Drives the rev-limiter spark-cut oscillation. */
+  timestampMs: number;
+  rng?: Rng;
 }
 
 export const INITIAL_WEAR: ComponentWear = {
@@ -105,7 +113,7 @@ export const INITIAL_WEAR: ComponentWear = {
 };
 
 /** Build a fresh engine state at a given cold-start coolant temperature. */
-export function createEngineState(coolantTemp = 40, throttle = 0.2): EngineSimState {
+export function createEngineState(coolantTemp = 40, wear: ComponentWear = INITIAL_WEAR): EngineSimState {
   return {
     engineState: EngineState.OFF,
     angle: 0,
@@ -113,9 +121,10 @@ export function createEngineState(coolantTemp = 40, throttle = 0.2): EngineSimSt
     coolantTemp,
     oilTemp: coolantTemp - 5,
     oilPressure: 0,
-    actualThrottle: throttle,
-    wear: { ...INITIAL_WEAR },
+    actualThrottle: 0,
+    wear: { ...wear },
     crankDriveTorque: 0,
+    idleIntegral: 0,
     cranking: false,
     ignitionCut: false,
     sparkFired: false,
@@ -133,28 +142,45 @@ function strokeFromCycleDeg(thetaDeg: number): StrokeType {
 const isDeadState = (s: EngineState): boolean => s === EngineState.EXPLODED || s === EngineState.SEIZED;
 
 /**
- * Advance the engine physics by `dt` seconds. Pure: returns a brand-new state
- * plus the list of domain events that occurred (state transitions, logs, audio
- * cues, failures). The caller is responsible for turning events into React
- * state / audio / logs.
- *
- * `timestampMs` drives the rev-limiter spark-cut oscillation (kept identical to
- * the original `performance.now()`-based behaviour). `rng` is injectable so the
- * stochastic parts (misfire, knock-log probability) are deterministic in tests.
+ * Idle-air bypass opening for the current speed. Behaves like a real idle valve:
+ * always slightly open, corrected toward the target idle, and fully shut once
+ * the engine is clearly off idle so lifting the throttle still engine-brakes.
  */
-export function stepEngine(
-  prev: EngineSimState,
-  params: EngineParameters,
+function idleBypassOpening(
+  state: EngineSimState,
   spec: EngineSpec,
-  dtRaw: number,
-  timestampMs: number,
-  rng: Rng = Math.random
-): StepResult {
-  const events: EngineEvent[] = [];
-  // Restrict dt leaps when the tab is inactive.
-  const dt = Math.min(INTEGRATOR.maxDt, Math.max(0, dtRaw));
+  choke: number,
+  dt: number,
+  isDead: boolean
+): { opening: number; integral: number } {
+  const fade = clamp01(1 - (state.rpm - spec.idleRpm) / IDLE.fadeSpanRpm);
+  if (fade <= 0 || isDead) {
+    return { opening: 0, integral: state.idleIntegral - state.idleIntegral * Math.min(1, dt * 2) };
+  }
 
-  // Work on a shallow copy; wear is replaced immutably below when it changes.
+  const errorKrpm = (spec.idleRpm - state.rpm) / 1000;
+  const integral = clamp(state.idleIntegral + errorKrpm * dt * IDLE.integralGain, -IDLE.maxBypass, IDLE.maxBypass);
+  const opening =
+    fade *
+    clamp(
+      IDLE.baseBypass + errorKrpm * IDLE.proportionalGain + integral + choke * IDLE.chokeBoost,
+      0,
+      IDLE.maxBypass
+    );
+
+  return { opening, integral };
+}
+
+/**
+ * Advance the engine physics by `dt` seconds, returning a new state and the
+ * domain events that occurred.
+ */
+export function stepEngine(input: StepInput): StepResult {
+  const { params, spec, tune, timestampMs, rng = Math.random } = input;
+  const prev = input.state;
+  const events: EngineEvent[] = [];
+  const dt = Math.min(INTEGRATOR.maxDt, Math.max(0, input.dt));
+
   const s: EngineSimState = { ...prev };
 
   const curState = s.engineState;
@@ -168,12 +194,18 @@ export function stepEngine(
     s.engineState = to;
   };
 
-  // Throttle butterfly inertia (commanded -> actual)
+  // --- Airflow: pedal (with butterfly inertia) vs. idle-air bypass ---------
   s.actualThrottle = smoothThrottle(s.actualThrottle, params.throttle, dt);
-  const actualThrottle = s.actualThrottle;
+  const idle = idleBypassOpening(s, spec, params.choke, dt, isDead);
+  s.idleIntegral = idle.integral;
+  const effectiveThrottle = Math.max(s.actualThrottle, idle.opening);
 
-  // Oil pressure derived from rpm/oil/temp/wear
-  s.oilPressure = oilPressureBar(curRpm, params.oilLevel, s.oilTemp, s.wear);
+  // --- ECU map lookup at the current speed --------------------------------
+  const breakpoints = tuneBreakpoints(spec);
+  const tuneSample = sampleTune(tune, breakpoints, curRpm);
+
+  const oilLevel = effectiveOilLevel(params.oilLevel, spec.oilCapacity);
+  s.oilPressure = oilPressureBar(curRpm, params.oilLevel, s.oilTemp, s.wear, spec.oilCapacity);
 
   // 1. STARTER MOTOR TORQUE (heavier flywheels are harder to spin up)
   let starterTorque = 0;
@@ -186,11 +218,10 @@ export function stepEngine(
   const normalViscosity =
     FRICTION.baseViscosity +
     (s.oilTemp < FRICTION.coldOilTemp ? (FRICTION.coldOilTemp - s.oilTemp) * FRICTION.coldOilViscosityPerDeg : 0);
-  let wearFrictionMultiplier = 1.0;
-  if (params.oilLevel < FRICTION.lowOilLevel) {
-    wearFrictionMultiplier += Math.pow(FRICTION.lowOilLevel - params.oilLevel, 1.3) * 0.06;
+  let wearFrictionMultiplier = spec.frictionMult;
+  if (oilLevel < FRICTION.lowOilLevel) {
+    wearFrictionMultiplier += Math.pow(FRICTION.lowOilLevel - oilLevel, 1.3) * 0.06;
   }
-  // Low oil pressure = metal-to-metal contact = big friction spike
   if (s.oilPressure < FRICTION.lowOilPressure && curRpm > 200) {
     wearFrictionMultiplier += (FRICTION.lowOilPressure - s.oilPressure) * 2.5;
   }
@@ -201,7 +232,12 @@ export function stepEngine(
 
   const kineticFrictionTorque = curRpm * FRICTION.kineticPerRpm * normalViscosity * wearFrictionMultiplier;
   const staticFrictionTorque = FRICTION.staticTorque * wearFrictionMultiplier;
-  const totalDecelFriction = staticFrictionTorque + kineticFrictionTorque;
+  // Pumping loss against a closed butterfly — this is what makes lifting off
+  // actually engine-brake. Faded out with throttle so it does not double-count
+  // the FMEP already inside `estimateBrakeTorque`.
+  const pumpingTorque =
+    curRpm * FRICTION.pumpingPerRpm * Math.max(0, 1 - effectiveThrottle) * (spec.peakTorque / 24);
+  const totalDecelFriction = staticFrictionTorque + kineticFrictionTorque + pumpingTorque;
 
   // 3. THERMODYNAMICS & CYLINDER PRESSURE FORCE
   const cycleRad = angle % FOUR_PI;
@@ -209,45 +245,48 @@ export function stepEngine(
   const strokeType = strokeFromCycleDeg(thetaDeg);
 
   const selfSustained = curState === EngineState.RUNNING || curState === EngineState.STARTING;
-  const chamber = getChamberState(
-    cycleRad,
-    actualThrottle,
-    params.fuelAirRatio,
-    selfSustained,
-    s.wear,
-    params.hasNitrous,
-    params.ignitionTiming,
-    curRpm,
+  const chamber = getChamberState({
+    angleRad: cycleRad,
+    throttle: effectiveThrottle,
+    lambda: tuneSample.lambda,
+    ignition: tuneSample.ignition,
+    rpm: curRpm,
     spec,
-    s.coolantTemp,
-    params.choke,
-    rng
-  );
+    wear: s.wear,
+    isRunning: selfSustained,
+    hasNitrous: params.hasNitrous,
+    cylinderTemp: s.coolantTemp,
+    choke: params.choke,
+    rng,
+  });
 
   if (chamber.knockSeverity > 0.12 && rng() < 0.02) {
     events.push({
       kind: 'log',
       level: 'critical',
-      message: `🚨 探测到发动机敲缸 (Knocking ${Math.round(
-        chamber.knockSeverity * 100
-      )}%)！高温/高压缩/点火过早导致异常爆震！建议延迟点火角或降温。`,
+      message: `🚨 探测到爆震 (Knock ${Math.round(chamber.knockSeverity * 100)}%) @ ${Math.round(
+        curRpm
+      )}rpm！请在 ECU 曲线上把该转速段的点火角回退，或加强散热。`,
     });
   }
   if (chamber.misfire && selfSustained && rng() < 0.03) {
     events.push({
       kind: 'log',
       level: 'warning',
-      message: `⚠️ 气缸失火 (Misfire)！空燃比 λ:${params.fuelAirRatio.toFixed(2)} 已超越稳定燃烧极限！`,
+      message: `⚠️ 失火 (Misfire)！λ:${tuneSample.lambda.toFixed(2)} @ ${Math.round(curRpm)}rpm 超出稳定燃烧极限。`,
     });
   }
 
-  const sparkThresholdDeg = 360 - params.ignitionTiming;
-  const isWithinSparkWindow = thetaDeg >= sparkThresholdDeg && thetaDeg < sparkThresholdDeg + 12;
+  const sparkThresholdDeg = 360 - tuneSample.ignition;
+  // The window is never narrower than the crank travel of one step, otherwise at
+  // high RPM the shaft could jump clean over it and the cylinder would never fire.
+  const crankTravelDeg = curRpm * 6 * dt;
+  const sparkWindowDeg = Math.max(SIM.sparkWindowDeg, crankTravelDeg);
+  const isWithinSparkWindow = thetaDeg >= sparkThresholdDeg && thetaDeg < sparkThresholdDeg + sparkWindowDeg;
 
   let triggeredIgnitedState = chamber.ignited;
   let limiterCut = false;
 
-  // Rev limiter spark cut (bounces off the limiter with backfires)
   if (params.hasLimiter && curRpm > params.limiterRpm) {
     triggeredIgnitedState = false;
     limiterCut = true;
@@ -258,12 +297,12 @@ export function stepEngine(
 
   if (s.ignitionCut) triggeredIgnitedState = false;
 
-  // Worn spark plug random misfire
-  if (triggeredIgnitedState && rng() > s.wear.sparkPlug / 100) {
+  // Worn spark plug random misfire, mitigated by a hotter ignition system.
+  const plugMisfireChance = (1 - s.wear.sparkPlug / 100) / (1 + spec.sparkEnergy);
+  if (triggeredIgnitedState && rng() < plugMisfireChance) {
     triggeredIgnitedState = false;
   }
 
-  // Spark + combustion edge-triggered events at the spark point
   if (isWithinSparkWindow && !s.sparkFired && !isDead) {
     s.sparkFired = true;
     events.push({ kind: 'spark' });
@@ -272,8 +311,8 @@ export function stepEngine(
       const knockingPing =
         chamber.knockSeverity > 0.2 ||
         s.wear.conrodBearings < 30 ||
-        (params.ignitionTiming > 25 && params.fuelAirRatio > 1.25);
-      events.push({ kind: 'combustion', rpm: curRpm, throttle: actualThrottle, knocking: knockingPing });
+        (tuneSample.ignition > 25 && tuneSample.lambda > 1.25);
+      events.push({ kind: 'combustion', rpm: curRpm, throttle: effectiveThrottle, knocking: knockingPing });
       if (params.hasNitrous && rng() < 0.2) {
         events.push({ kind: 'log', level: 'critical', message: 'NOS 笑气爆燃！产生极致燃烧功！' });
       }
@@ -305,16 +344,28 @@ export function stepEngine(
   const limiterTorqueScale = onLimiter
     ? LIMITER.torqueScaleBase + LIMITER.torqueScaleSwing * Math.max(0, Math.sin(timestampMs * LIMITER.cutFrequency))
     : 1.0;
+
+  const limits = { rich: COMBUSTION.lambdaRich, lean: COMBUSTION.lambdaLean };
   const combustionDriveAvailable =
     selfSustained &&
     !s.ignitionCut &&
     s.wear.sparkPlug > COMBUSTION.minSparkPlug &&
-    params.fuelAirRatio >= COMBUSTION.lambdaRich &&
-    params.fuelAirRatio <= COMBUSTION.lambdaLean;
+    tuneSample.lambda >= limits.rich &&
+    tuneSample.lambda <= limits.lean;
+
   const meanBrakeTorque = combustionDriveAvailable
-    ? estimateBrakeTorque(curRpm, actualThrottle, params.fuelAirRatio, params.ignitionTiming, spec, s.wear, params.hasNitrous) *
-      limiterTorqueScale
+    ? estimateBrakeTorque({
+        rpm: curRpm,
+        throttle: effectiveThrottle,
+        lambda: tuneSample.lambda,
+        ignition: tuneSample.ignition,
+        spec,
+        wear: s.wear,
+        hasNitrous: params.hasNitrous,
+        knock: chamber.knockSeverity,
+      }) * limiterTorqueScale
     : 0;
+
   const targetDriveTorque = meanBrakeTorque > 0 ? meanBrakeTorque + totalDecelFriction : 0;
   const torqueResponseTau = DRIVE.baseTau + spec.rotatingInertia * DRIVE.inertiaTauFactor;
   s.crankDriveTorque = smoothMetric(s.crankDriveTorque, targetDriveTorque, dt, {
@@ -322,16 +373,12 @@ export function stepEngine(
     maxDeltaPerSecond: spec.peakTorque * DRIVE.maxDeltaFactor,
   });
 
-  const pulseTrim = Math.max(
-    -DRIVE.pulseTrimClamp,
-    Math.min(DRIVE.pulseTrimClamp, pistonForceTorque / Math.max(1, spec.peakTorque * 12))
-  );
-  const externalLoadDrag = params.load;
-  const rotationalDamping = rotationalDragTorque(curRpm);
+  const pulseTrim = clamp(pistonForceTorque / Math.max(1, spec.peakTorque * 12), -DRIVE.pulseTrimClamp, DRIVE.pulseTrimClamp);
+  const rotationalDamping = rotationalDragTorque(curRpm, spec.frictionMult);
   const netTorque =
-    s.crankDriveTorque * (1 + pulseTrim) + starterTorque - totalDecelFriction - externalLoadDrag - rotationalDamping;
+    s.crankDriveTorque * (1 + pulseTrim) + starterTorque - totalDecelFriction - params.load - rotationalDamping;
 
-  // 4. ANGULAR ROTATION ACCELERATION (spec-driven inertia)
+  // 4. ANGULAR ACCELERATION (spec-driven inertia)
   let angularVelocity = (curRpm * TWO_PI) / 60;
   if (!isDead) {
     angularVelocity += (netTorque / spec.rotatingInertia) * dt;
@@ -347,40 +394,52 @@ export function stepEngine(
     transitionTo(EngineState.RUNNING, 'caught', {
       kind: 'log',
       level: 'success',
-      message: '缸内点火连续自持！发动机正常运转运行。',
+      message: '缸内点火连续自持，发动机进入运转状态。',
     });
   }
   if (curState === EngineState.RUNNING && newRpm < RPM.stall && !isDead) {
     transitionTo(EngineState.STALLED, 'stalled', {
       kind: 'log',
       level: 'warning',
-      message: '怠速转速偏低，发动机发生失速熄火。 (STALLED)',
+      message: '转速跌破自持下限，发动机失速熄火 (STALLED)。',
     });
   }
   if (curState === EngineState.STARTING && !s.cranking && newRpm < RPM.failedStart && !isDead) {
     transitionTo(EngineState.OFF, 'failedStart', {
       kind: 'log',
       level: 'warning',
-      message: '释放起动电机，拖动终止，未能成功点火启动。',
+      message: '起动机脱开，未能成功点火起动。',
     });
   }
 
-  // 5. TEMPERATURE INTEGRATION (coolant + oil, spec thermal mass + coolant pump)
+  // 5. TEMPERATURE INTEGRATION (coolant + oil)
+  //
+  // Heat scales with how much fuel the engine is actually burning: speed,
+  // load, displacement (via peak torque), boost and detonation. Cooling is
+  // gated by a thermostat so a cold engine warms up instead of sitting at
+  // ambient, and only weakly by engine speed — this is a test bench, not a
+  // vehicle with road speed forcing air through the core.
   const combustionHeatRate =
     (triggeredIgnitedState ? THERMAL.combustionHeat : 0) *
     (curRpm / THERMAL.heatReferenceRpm) *
-    (0.3 + 0.7 * actualThrottle) *
+    (spec.peakTorque / THERMAL.heatOutputReference) *
+    (0.45 + 0.55 * effectiveThrottle) *
+    (1 + spec.boostBar * 0.9) *
+    (1 + chamber.knockSeverity * 0.6) *
     (params.hasNitrous ? THERMAL.nitrousHeatFactor : 1.0);
-  const scoringFrictionHeatRate = (curRpm / 600) * Math.max(0, FRICTION.lowOilLevel - params.oilLevel) * 0.15;
+  const scoringFrictionHeatRate = (curRpm / 600) * Math.max(0, FRICTION.lowOilLevel - oilLevel) * 0.15;
+
+  const thermostat = clamp01((s.coolantTemp - THERMAL.thermostatTemp) / THERMAL.thermostatSpan);
+  const radiatorCapacity =
+    THERMAL.bypassLeak +
+    thermostat * (1.0 + (curRpm / 1000) * THERMAL.radiatorRpmFactor) * (0.45 + 0.9 * params.coolantPump);
   const radiatorCooling =
-    (s.coolantTemp - THERMAL.ambient) *
-    THERMAL.radiatorBase *
-    (1.0 + (curRpm / 1000) * 0.55) *
-    (0.45 + 0.9 * params.coolantPump);
-  const netTempChange = ((combustionHeatRate + scoringFrictionHeatRate - radiatorCooling) / spec.thermalMass) * dt;
+    (s.coolantTemp - THERMAL.ambient) * THERMAL.radiatorBase * spec.coolingFactor * radiatorCapacity;
+
+  const netTempChange =
+    ((combustionHeatRate + scoringFrictionHeatRate - radiatorCooling) / (spec.thermalMass * THERMAL.massScale)) * dt;
   s.coolantTemp = Math.max(THERMAL.ambient, s.coolantTemp + netTempChange);
 
-  // Oil temp lags coolant temp and rises with rpm
   const oilTarget = s.coolantTemp + THERMAL.oilOffset + curRpm * 0.002;
   s.oilTemp += (oilTarget - s.oilTemp) * Math.min(1, dt * THERMAL.oilResponseRate);
 
@@ -388,7 +447,7 @@ export function stepEngine(
     events.push({
       kind: 'log',
       level: 'critical',
-      message: '警告：水温过高！金属热膨胀，拉缸损坏加剧！请增大冷却泵或减小油门。',
+      message: '警告：水温过高！金属热膨胀，拉缸风险剧增。请加大冷却泵或收油。',
     });
   }
   if (s.oilPressure < 0.6 && curRpm > 1500 && rng() < 0.015) {
@@ -401,25 +460,29 @@ export function stepEngine(
 
   // 6. COMPONENT WEAR DEGRADATION
   if (!isDead && curRpm > RPM.wearFloor) {
-    const oilWearMultiplier =
-      params.oilLevel < FRICTION.lowOilLevel ? 1 + Math.pow(FRICTION.lowOilLevel - params.oilLevel, 1.6) * 0.4 : 1;
+    const oilWearMultiplier = oilLevel < FRICTION.lowOilLevel ? 1 + Math.pow(FRICTION.lowOilLevel - oilLevel, 1.6) * 0.4 : 1;
     const pressureWearMultiplier = s.oilPressure < 1.0 ? 1 + (1.0 - s.oilPressure) * 6 : 1;
     const knockWearMultiplier = 1.0 + chamber.knockSeverity * WEAR.knockFactor;
-    const overRev = newRpm > spec.redlineRpm;
+    // Graduated over-rev damage: proportional to the fraction past redline.
+    const overRevRatio = Math.max(0, (newRpm - spec.redlineRpm) / spec.redlineRpm);
+    const bearingOverRev = 1 + overRevRatio * WEAR.overRevBearingFactor;
+    const crankOverRev = 1 + overRevRatio * WEAR.overRevCrankFactor;
 
-    const pistonRingWearDt = dt * WEAR.pistonRings * oilWearMultiplier * knockWearMultiplier * (s.coolantTemp > 110 ? 25 : 1);
-    const wallWearDt = dt * WEAR.cylinderWall * oilWearMultiplier * (s.coolantTemp > 115 ? 40 : 1);
+    const pistonRingWearDt =
+      dt * WEAR.pistonRings * oilWearMultiplier * knockWearMultiplier * (s.coolantTemp > WEAR.hotRingsTemp ? 25 : 1);
+    const wallWearDt = dt * WEAR.cylinderWall * oilWearMultiplier * (s.coolantTemp > WEAR.hotWallTemp ? 40 : 1);
     const bearingsWearDt =
       dt *
       WEAR.conrodBearings *
       oilWearMultiplier *
       pressureWearMultiplier *
       knockWearMultiplier *
-      (overRev ? 12 : 1) *
+      bearingOverRev *
       (params.hasNitrous ? WEAR.nitrousBearingFactor : 1);
-    const crankshaftWearDt = dt * WEAR.crankshaftJournal * oilWearMultiplier * pressureWearMultiplier * (overRev ? 8 : 1);
+    const crankshaftWearDt =
+      dt * WEAR.crankshaftJournal * oilWearMultiplier * pressureWearMultiplier * crankOverRev;
     const sparkPlugWearDt = dt * WEAR.sparkPlug * (triggeredIgnitedState ? 1.5 : 0.2);
-    const valvesWearDt = dt * WEAR.valves * (s.coolantTemp > 110 ? 5 : 1);
+    const valvesWearDt = dt * WEAR.valves * (s.coolantTemp > WEAR.hotValvesTemp ? 5 : 1);
 
     const prevWear = s.wear;
     const nextWear: ComponentWear = {
@@ -433,42 +496,37 @@ export function stepEngine(
     s.wear = nextWear;
 
     if (nextWear.pistonRings === 0 && prevWear.pistonRings > 0) {
-      events.push({
-        kind: 'log',
-        level: 'critical',
-        message: '活塞环熔断！气缸失去气密压缩，发动机永久熄火。',
-      });
+      events.push({ kind: 'log', level: 'critical', message: '活塞环熔断！气缸失去气密，发动机永久熄火。' });
       transitionTo(EngineState.STALLED, 'pistonRingsFailed');
       s.rpm = 0;
     }
     if (nextWear.conrodBearings === 0 && prevWear.conrodBearings > 0) {
-      events.push({ kind: 'failure', state: EngineState.EXPLODED, reason: '活塞连杆轴瓦烧毁，连杆断裂，飞出击穿气缸缸体！发动机彻底报废！' });
+      events.push({ kind: 'failure', state: EngineState.EXPLODED, reason: '连杆轴瓦烧毁，连杆断裂击穿缸体！发动机彻底报废！' });
     }
     if (nextWear.cylinderWall === 0 && prevWear.cylinderWall > 0) {
-      events.push({ kind: 'failure', state: EngineState.SEIZED, reason: '由于干摩擦与高温，活塞与汽缸完全融结抱死，发动机抱死阻断转动。' });
+      events.push({ kind: 'failure', state: EngineState.SEIZED, reason: '干摩擦与高温导致活塞与气缸熔结抱死。' });
     }
   }
 
-  // 7. CRITICAL STRESS THRESHOLDS (spec-driven destruct rpm)
+  // 7. CRITICAL STRESS THRESHOLDS
   if (newRpm > spec.destructRpm && !isDead) {
     events.push({
       kind: 'failure',
       state: EngineState.EXPLODED,
-      reason: `转速超越物理极限 ${spec.destructRpm} RPM！高机械惯性拉断连杆，机械碎裂爆炸！`,
+      reason: `转速超越机械极限 ${Math.round(spec.destructRpm)} RPM！连杆被拉断，机件碎裂爆炸！`,
     });
   }
   if (s.coolantTemp > THERMAL.seizeTemp && !isDead) {
-    events.push({ kind: 'failure', state: EngineState.SEIZED, reason: '极其严重之高温过热！金属烧熔卡死，曲轴抱死 (SEIZED)。' });
+    events.push({ kind: 'failure', state: EngineState.SEIZED, reason: '严重过热！金属烧熔卡死，曲轴抱死 (SEIZED)。' });
   }
   if (params.hasNitrous && s.coolantTemp > 120 && rng() < 0.06 && !isDead) {
     events.push({
       kind: 'failure',
       state: EngineState.EXPLODED,
-      reason: '在高温过热状态下不当施加笑气 (NOS)，混合气剧烈回火引发缸体瞬时爆震！',
+      reason: '高温状态下强行喷射笑气，混合气剧烈回火引发缸体爆震解体！',
     });
   }
 
-  // Apply the first failure event (if any) authoritatively.
   const failure = events.find((e): e is Extract<EngineEvent, { kind: 'failure' }> => e.kind === 'failure');
   if (failure && !isDeadState(s.engineState)) {
     s.engineState = failure.state;
@@ -482,7 +540,6 @@ export function stepEngine(
     }
   }
 
-  // Save physics state updates (unless a failure forced rpm/angle to a halt).
   if (!isDeadState(s.engineState)) {
     s.rpm = newRpm;
     s.angle = (angle + angularVelocity * dt) % FOUR_PI;
@@ -497,6 +554,9 @@ export function stepEngine(
       pistonForceTorque,
       limiterTorqueScale,
       selfSustained,
+      effectiveThrottle,
+      idleBypass: idle.opening,
+      tune: tuneSample,
     },
     events,
   };

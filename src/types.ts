@@ -8,98 +8,247 @@ export enum EngineState {
   STARTING = 'STARTING',
   RUNNING = 'RUNNING',
   STALLED = 'STALLED',
-  SEIZED = 'SEIZED', // Overheated/no-oil metal fuse / seized
+  SEIZED = 'SEIZED', // Overheated / oil-starved metal fuse
   EXPLODED = 'EXPLODED', // Engine blown up
 }
 
 export enum StrokeType {
-  INTAKE = 'INTAKE',       // 进气
-  COMPRESSION = 'COMPRESSION', // 压缩
-  POWER = 'POWER',         // 动力 (作功)
-  EXHAUST = 'EXHAUST',     // 排气
-}
-
-export interface EngineParameters {
-  throttle: number;         // 0 - 1 (commanded throttle; actual lags via butterfly inertia)
-  load: number;             // Brake/dyno drag load (0 - 50 Nm)
-  fuelAirRatio: number;     // Lambda: 0.6 (rich) - 1.5 (lean), ideal is ~0.92 for power / 1.0 stoich
-  oilLevel: number;         // 0% - 100%, below 35% causes friction heater and extreme wear
-  ignitionTiming: number;   // Ignition advance degrees BTDC (Before Top Dead Center), 0° - 45°
-  hasLimiter: boolean;      // True if RPM limiter is active
-  limiterRpm: number;       // RPM ceiling (e.g. 7000 RPM)
-  hasNitrous: boolean;      // Nos boost active helper
-  coolantPump: number;      // 0 - 1, radiator/coolant flow capacity (cooling aggressiveness)
-  choke: number;            // 0 - 1, cold-start enrichment (extra fuel when cold)
+  INTAKE = 'INTAKE',
+  COMPRESSION = 'COMPRESSION',
+  POWER = 'POWER',
+  EXHAUST = 'EXHAUST',
 }
 
 /**
- * Static engine build specification. Swapping these reconfigures the whole physics model:
- * displacement, redline behaviour, torque curve shape, thermal mass, etc.
+ * Settings the player leaves in a position. These live in React state and change
+ * at human speed.
+ *
+ * Fuelling and ignition advance are deliberately absent — they vary with RPM, so
+ * they live in the {@link TuneMap} instead.
+ */
+export interface EngineControls {
+  load: number; // External brake/dyno drag load (Nm)
+  oilLevel: number; // 0% - 100%
+  coolantPump: number; // 0 - 1 radiator/coolant flow
+  choke: number; // 0 - 1 cold-start enrichment
+  hasLimiter: boolean;
+  limiterRpm: number;
+}
+
+/**
+ * The complete control input to one physics step. `throttle` and `hasNitrous`
+ * are momentary — they are held in refs and integrated per frame rather than
+ * stored in React state, so blipping the throttle costs no re-renders.
+ */
+export interface EngineParameters extends EngineControls {
+  throttle: number; // 0 - MAX_THROTTLE commanded pedal (actual butterfly lags)
+  hasNitrous: boolean;
+}
+
+/** Fast-changing values the control deck displays. Pushed at telemetry cadence. */
+export interface HudState {
+  /** Commanded pedal position after its ramp, 0-1. */
+  pedal: number;
+  /** Butterfly position after inertia lag, 0-1. */
+  butterfly: number;
+  /** Idle-air valve opening, 0-1. */
+  idleBypass: number;
+  /** Ignition advance the ECU map produced at the current RPM. */
+  ignition: number;
+  /** Lambda the ECU map produced at the current RPM. */
+  lambda: number;
+  /** Advance at which the engine would begin to detonate right now. */
+  knockLimit: number;
+  cranking: boolean;
+  ignitionCut: boolean;
+  nitrous: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// ECU tuning maps
+// ---------------------------------------------------------------------------
+
+/**
+ * Ignition advance and target lambda as a function of RPM. Both arrays hold
+ * {@link TUNE_POINTS} values sampled at the breakpoints returned by
+ * `tuneBreakpoints(spec)`, and are linearly interpolated in between.
+ *
+ * This is the heart of the tuning game: a flat map is safe but slow, and real
+ * power comes from shaping advance up top without tipping the engine into knock.
+ */
+export interface TuneMap {
+  ignition: number[]; // degrees BTDC at each breakpoint
+  lambda: number[]; // target lambda at each breakpoint
+}
+
+export interface TunePreset {
+  name: string;
+  tune: TuneMap;
+}
+
+/** Interpolated tune values at one operating point. */
+export interface TuneSample {
+  ignition: number;
+  lambda: number;
+}
+
+// ---------------------------------------------------------------------------
+// Build / parts
+// ---------------------------------------------------------------------------
+
+export type PartSlot =
+  | 'piston' // compression ratio
+  | 'cam' // torque peak + breathing character
+  | 'crank' // rotating inertia (flywheel)
+  | 'rod' // destruct RPM headroom
+  | 'head' // flow + knock resistance
+  | 'intake'
+  | 'exhaust'
+  | 'ignition' // spark energy -> misfire resistance
+  | 'cooling'
+  | 'oil'
+  | 'ecu' // how many tune breakpoints you may edit
+  | 'boost'; // turbo / supercharger
+
+/** Multiplicative/additive modifiers a part contributes to the resolved spec. */
+export interface PartMods {
+  boreDelta?: number; // mm added to bore
+  strokeDelta?: number; // mm added to stroke
+  compressionRatio?: number; // absolute override
+  inertiaMult?: number;
+  redlineMult?: number;
+  destructMult?: number;
+  bmepMult?: number; // torque per litre
+  torquePeakShift?: number; // RPM shift of the VE peak
+  veLowMult?: number; // low-RPM breathing
+  veHighMult?: number; // high-RPM breathing
+  thermalMassMult?: number;
+  coolingMult?: number;
+  knockResistance?: number; // additive; 0 = stock
+  frictionMult?: number;
+  sparkEnergy?: number; // additive misfire resistance
+  oilCapacityMult?: number;
+  boostBar?: number; // gauge boost pressure
+  ecuTier?: number; // 0 flat / 1 three-zone / 2 full map
+}
+
+export interface Part {
+  id: string;
+  slot: PartSlot;
+  name: string;
+  desc: string;
+  /** Downside the player should weigh before bolting it on. */
+  drawback: string;
+  cost: number;
+  /** Career tier at which this part appears in the shop. */
+  tier: number;
+  /** Only fits these blocks; omit for universal parts. */
+  blocks?: string[];
+  mods: PartMods;
+}
+
+/** A purchasable engine platform. Parts bolt onto it. */
+export interface EngineBlock {
+  id: string;
+  name: string;
+  desc: string;
+  cost: number;
+  tier: number;
+  bore: number;
+  stroke: number;
+  baseCompression: number;
+  /** Stock head/cam/exhaust character baked into the block, as a BMEP scalar. */
+  baseBmepMult: number;
+  baseInertia: number;
+  baseRedline: number;
+  baseDestruct: number;
+  baseTorquePeakRpm: number;
+  baseThermalMass: number;
+  idleRpm: number;
+}
+
+/** The player's current engine: a block plus whatever is bolted to it. */
+export interface EngineBuild {
+  blockId: string;
+  installed: Partial<Record<PartSlot, string>>;
+}
+
+/**
+ * Fully resolved engine characteristics. Produced by `resolveBuild()` — never
+ * hand-written — so every physical property traces back to a part the player
+ * actually bought.
  */
 export interface EngineSpec {
   id: string;
   name: string;
-  bore: number;             // mm
-  stroke: number;           // mm
-  compressionRatio: number; // static geometric CR (e.g. 9.5, 11.5 for race)
-  rotatingInertia: number;  // kg·m² (crank + flywheel) — lighter = revvier but less stable idle
-  redlineRpm: number;       // mechanical safe redline
-  destructRpm: number;      // hard mechanical failure RPM (rods let go)
-  peakTorque: number;       // Nm reference at the torque peak (used to shape the VE curve)
-  torquePeakRpm: number;    // RPM where volumetric efficiency peaks
-  thermalMass: number;      // relative heat capacity (higher = heats/cools slower)
+  bore: number; // mm
+  stroke: number; // mm
+  compressionRatio: number;
+  rotatingInertia: number; // kg·m²
+  redlineRpm: number;
+  destructRpm: number;
+  peakTorque: number; // Nm reference used to shape the torque curve
+  torquePeakRpm: number;
+  thermalMass: number;
+  idleRpm: number;
   description: string;
+
+  // --- character fields derived from installed parts ---
+  coolingFactor: number; // 1 = stock radiator
+  knockResistance: number; // 0 = stock; higher tolerates more advance/heat
+  frictionMult: number; // 1 = stock
+  veLowMult: number; // cam character below the torque peak
+  veHighMult: number; // cam character above the torque peak
+  sparkEnergy: number; // 0 = stock; higher resists misfire
+  oilCapacity: number; // 1 = stock sump
+  boostBar: number; // 0 = naturally aspirated
+  ecuTier: number; // 0..2 tune-map resolution
 }
 
+// ---------------------------------------------------------------------------
+// Condition / telemetry
+// ---------------------------------------------------------------------------
+
 export interface ComponentWear {
-  pistonRings: number;      // 100 (pristine) -> 0 (broken, causes oil burning, compression loss)
-  cylinderWall: number;     // 100 -> 0 (scoured, causes compression leak, blowby)
-  conrodBearings: number;   // 100 -> 0 (knocking, reduces power, can throw a rod!)
-  crankshaftJournal: number;// 100 -> 0 (friction spikes, risk of seize)
-  sparkPlug: number;        // 100 -> 0 (misfires, stalling)
-  valves: number;           // 100 -> 0 (leaking valves, loss of power/stall)
+  pistonRings: number; // 100 (pristine) -> 0 (broken)
+  cylinderWall: number;
+  conrodBearings: number;
+  crankshaftJournal: number;
+  sparkPlug: number;
+  valves: number;
 }
 
 export interface TelemetryPoint {
   timeIndex: number;
   rpm: number;
-  temp: number;             // Cylinder/coolant temperature in °C
-  torque: number;           // output torque in Nm
-  power: number;            // output power in HP
-  pressure: number;         // cylinder pressure in bar (peaks during Power stroke)
-  fuelFlow: number;         // ml/s
-  efficiency: number;       // Thermodynamic efficiency %
-  oilPressure: number;      // bar
+  temp: number; // coolant °C
+  torque: number; // Nm
+  power: number; // HP
+  pressure: number; // peak cylinder pressure, bar
+  fuelFlow: number; // ml/s
+  efficiency: number; // combustion quality %
+  oilPressure: number; // bar
+  knock: number; // 0-100 knock severity
 }
+
+export type LogLevel = 'info' | 'success' | 'warning' | 'error' | 'critical';
 
 export interface LogMessage {
   id: string;
   time: string;
-  type: 'info' | 'success' | 'warning' | 'error' | 'critical';
+  type: LogLevel;
   message: string;
 }
 
-/** Live derived runtime telemetry (richer than a single charted point). */
-export interface RuntimeStats {
-  rpm: number;
-  coolantTemp: number;      // °C
-  oilTemp: number;          // °C
-  oilPressure: number;      // bar
-  torque: number;           // Nm (net brake torque)
-  power: number;            // HP
-  pressure: number;         // instantaneous cylinder pressure bar
-  fuelFlow: number;         // ml/s
-  efficiency: number;       // %
-  actualThrottle: number;   // 0-1 (butterfly position after lag)
-  knock: number;            // 0-1 knock severity
-  boost: number;            // nitrous/forced indicator 0-1
-}
+// ---------------------------------------------------------------------------
+// Dyno
+// ---------------------------------------------------------------------------
 
-/** A captured dyno pull: torque & power vs RPM. */
 export interface DynoCurvePoint {
   rpm: number;
-  torque: number;  // Nm
-  power: number;   // HP
+  torque: number; // Nm
+  power: number; // HP
+  knock: number; // 0-1 severity recorded at this RPM
 }
 
 export interface DynoResult {
@@ -110,37 +259,69 @@ export interface DynoResult {
   peakPowerRpm: number;
   peakTorqueNm: number;
   peakTorqueRpm: number;
+  /** Highest coolant temperature seen during the pull (°C). */
+  maxTemp: number;
+  /** Highest knock severity seen during the pull (0-1). */
+  maxKnock: number;
+  /** Health points consumed by the pull, summed across components. */
+  wearCost: number;
+  /** Set when the pull ended early (blew up, seized, stalled, timed out). */
+  aborted: string | null;
   timestamp: number;
 }
 
-export type ChallengeId = 'idle' | 'dyno' | 'endurance' | 'redline';
+// ---------------------------------------------------------------------------
+// Career
+// ---------------------------------------------------------------------------
 
-export interface Challenge {
-  id: ChallengeId;
+export type ContractKind = 'idle' | 'dyno' | 'redline' | 'endurance' | 'powerband' | 'thermal';
+
+export interface Contract {
+  id: string;
+  kind: ContractKind;
+  tier: number;
   name: string;
-  subtitle: string;
-  goal: string;
+  brief: string;
+  /** What the player should actually do, in one line. */
+  how: string;
+  /** Pass threshold. Interpreted per `kind`. */
+  target: number;
+  /** Threshold for a perfect (3-star) result. */
+  stretch: number;
+  /**
+   * Optional secondary gate on a dyno contract: peak knock severity (0-1) that
+   * the pull must stay under. Used for "make this much power *cleanly*".
+   */
+  knockLimit?: number;
+  reward: number; // credits
+  /** Parts gifted outright the first time this contract is passed. */
+  unlocks: string[];
 }
 
-export interface ChallengeProgress {
-  active: ChallengeId | null;
-  startedAt: number;        // performance.now() ms
-  elapsed: number;          // seconds inside the challenge
-  metricLabel: string;      // what we're measuring
-  metricValue: number;      // live measured value
-  targetValue: number;      // value needed to pass
-  best: Record<ChallengeId, number>; // personal bests per challenge
+export interface ContractRun {
+  id: string | null;
+  startedAt: number;
+  elapsed: number;
+  metricLabel: string;
+  metricValue: number;
+  targetValue: number;
+  stretchValue: number;
   status: 'idle' | 'running' | 'passed' | 'failed';
   message: string;
+  /** Live hint about what is currently blocking a pass. */
+  hint: string;
 }
 
 export interface GarageState {
-  credits: number;          // currency earned from challenges/dyno, spent on repairs
-  runtimeHours: number;     // accumulated engine running time (engine "mileage")
-  score: number;            // cumulative tuning score
-}
-
-export interface TunePreset {
-  name: string;
-  params: Pick<EngineParameters, 'fuelAirRatio' | 'ignitionTiming' | 'limiterRpm' | 'hasLimiter' | 'coolantPump'>;
+  credits: number;
+  runtimeHours: number;
+  score: number;
+  /** Highest career tier reached; gates what the shop stocks. */
+  tier: number;
+  /** Stars earned per contract id (0-3). */
+  stars: Record<string, number>;
+  /** Best metric per contract id. */
+  best: Record<string, number>;
+  /** Block + part ids the player owns. */
+  owned: string[];
 }

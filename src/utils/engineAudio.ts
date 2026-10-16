@@ -1,8 +1,18 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Web Audio synthesis for the engine.
+ *
+ * Sustained layers (body rumble, induction rush, starter whine, fan) run as
+ * always-on nodes whose parameters follow the engine; the exhaust pulse train
+ * is scheduled a little ahead of the clock. One-shot events (spark, combustion
+ * crack, backfire, explosion) are short-lived oscillators.
+ *
+ * The context is created lazily on the first user gesture, as browsers require.
  */
 
+import type { AudioFrame, AudioSink } from '../runtime/audioSink';
 import {
   airRushGain,
   blockFilterFreq,
@@ -17,410 +27,282 @@ import {
   starterFreq,
 } from './engineAudioParams';
 
-class EngineSoundManager {
-  private ctx: AudioContext | null = null;
-  private mainGain: GainNode | null = null;
-  private isMuted: boolean = false;
-  private volume: number = 0.5;
+/** Combustion cracks closer together than this are merged: they are inaudible as separate hits. */
+const MIN_COMBUSTION_GAP_S = 0.04;
 
-  // Sound nodes
-  private cylinderOsc1: OscillatorNode | null = null;
-  private cylinderOsc2: OscillatorNode | null = null;
-  private cylinderGain: GainNode | null = null;
-  
-  private airNoise: AudioWorkletNode | ScriptProcessorNode | null = null;
-  private airGain: GainNode | null = null;
+interface Graph {
+  ctx: AudioContext;
+  master: GainNode;
+  blockFilter: BiquadFilterNode;
+  cylinderOsc1: OscillatorNode;
+  cylinderOsc2: OscillatorNode;
+  cylinderGain: GainNode;
+  airGain: GainNode;
+  fanGain: GainNode;
+  starterOsc: OscillatorNode;
+  starterGain: GainNode;
+  noise: AudioBuffer;
+  crunch: WaveShaperNode['curve'];
+  heavyCrunch: WaveShaperNode['curve'];
+}
 
-  private starterOsc: OscillatorNode | null = null;
-  private starterGain: GainNode | null = null;
-
-  // Cooling fan / radiator airflow loop
-  private fanGain: GainNode | null = null;
-
-  // Lowpass filter to simulate engine block muffling
-  private blockFilter: BiquadFilterNode | null = null;
-
-  // Combustion pulse scheduling (single-cylinder fires once per 2 revolutions)
+class EngineSoundManager implements AudioSink {
+  private graph: Graph | null = null;
+  private muted = false;
+  private volume = 0.5;
   private nextPulseTime = 0;
+  private lastCombustionTime = 0;
 
-  constructor() {
-    // Initialized lazily upon user interaction
-  }
-
-  init() {
-    if (this.ctx) return;
+  /** Create the audio graph. Must be called from a user gesture the first time. */
+  init(): void {
+    if (this.graph || typeof AudioContext === 'undefined') return;
     try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      this.ctx = new AudioCtx();
-      
-      this.mainGain = this.ctx.createGain();
-      this.mainGain.gain.setValueAtTime(this.isMuted ? 0 : this.volume, this.ctx.currentTime);
-      this.mainGain.connect(this.ctx.destination);
-
-      // Lowpass block filter
-      this.blockFilter = this.ctx.createBiquadFilter();
-      this.blockFilter.type = 'lowpass';
-      this.blockFilter.frequency.setValueAtTime(450, this.ctx.currentTime); // muffles the rough raw waves
-      this.blockFilter.connect(this.mainGain);
-
-      // 1. Cylinder Base Tone (Low-freq sawtooth simulating cylinder movement & pulses)
-      this.cylinderOsc1 = this.ctx.createOscillator();
-      this.cylinderOsc1.type = 'sawtooth';
-      this.cylinderOsc1.frequency.setValueAtTime(10, this.ctx.currentTime);
-
-      this.cylinderOsc2 = this.ctx.createOscillator();
-      this.cylinderOsc2.type = 'triangle';
-      this.cylinderOsc2.frequency.setValueAtTime(20, this.ctx.currentTime);
-
-      this.cylinderGain = this.ctx.createGain();
-      this.cylinderGain.gain.setValueAtTime(0, this.ctx.currentTime);
-
-      this.cylinderOsc1.connect(this.cylinderGain);
-      this.cylinderOsc2.connect(this.cylinderGain);
-      this.cylinderGain.connect(this.blockFilter);
-
-      this.cylinderOsc1.start();
-      this.cylinderOsc2.start();
-
-      // 2. Air Intake / Exhaust Rushing (noise)
-      this.setupAirNoise();
-
-      // 3. Starter Motor
-      this.starterOsc = this.ctx.createOscillator();
-      this.starterOsc.type = 'sine';
-      this.starterOsc.frequency.setValueAtTime(180, this.ctx.currentTime);
-      
-      // Starter sub-harmonics for gear grinding
-      const starterSaw = this.ctx.createOscillator();
-      starterSaw.type = 'triangle';
-      starterSaw.frequency.setValueAtTime(90, this.ctx.currentTime);
-
-      this.starterGain = this.ctx.createGain();
-      this.starterGain.gain.setValueAtTime(0, this.ctx.currentTime);
-
-      this.starterOsc.connect(this.starterGain);
-      starterSaw.connect(this.starterGain);
-      this.starterGain.connect(this.mainGain); // bypass lowpass for high starter whine
-
-      this.starterOsc.start();
-      starterSaw.start();
-
-      // 4. Cooling fan airflow (filtered noise loop)
-      this.setupFanNoise();
-    } catch (e) {
-      console.warn("Failed to initialize Web Audio API:", e);
+      this.graph = this.build(new AudioContext());
+    } catch (error) {
+      console.warn('Failed to initialise Web Audio:', error);
     }
   }
 
-  private setupFanNoise() {
-    if (!this.ctx || !this.mainGain) return;
-    try {
-      const bufferSize = 4096;
-      const provider = this.ctx.createScriptProcessor ? this.ctx.createScriptProcessor(bufferSize, 1, 1) : null;
-      if (!provider) return;
-      provider.onaudioprocess = (e) => {
-        const out = e.outputBuffer.getChannelData(0);
-        for (let i = 0; i < bufferSize; i++) out[i] = Math.random() * 2 - 1;
-      };
-      this.fanGain = this.ctx.createGain();
-      this.fanGain.gain.setValueAtTime(0, this.ctx.currentTime);
-      const fanFilter = this.ctx.createBiquadFilter();
-      fanFilter.type = 'bandpass';
-      fanFilter.frequency.setValueAtTime(420, this.ctx.currentTime);
-      fanFilter.Q.setValueAtTime(0.7, this.ctx.currentTime);
-      provider.connect(fanFilter);
-      fanFilter.connect(this.fanGain);
-      this.fanGain.connect(this.mainGain);
-    } catch (e) {
-      console.warn('Failed to build fan noise:', e);
-    }
+  private build(ctx: AudioContext): Graph {
+    const t = ctx.currentTime;
+
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(this.muted ? 0 : this.volume, t);
+    master.connect(ctx.destination);
+
+    // Muffles the raw waves the way an engine block does.
+    const blockFilter = ctx.createBiquadFilter();
+    blockFilter.type = 'lowpass';
+    blockFilter.frequency.setValueAtTime(450, t);
+    blockFilter.connect(master);
+
+    // One shared second of white noise, looped by every noise layer.
+    const noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    const samples = noise.getChannelData(0);
+    for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+
+    const noiseLayer = (type: BiquadFilterType, frequency: number, q: number, destination: AudioNode): GainNode => {
+      const source = ctx.createBufferSource();
+      source.buffer = noise;
+      source.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = type;
+      filter.frequency.setValueAtTime(frequency, t);
+      filter.Q.setValueAtTime(q, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0, t);
+      source.connect(filter).connect(gain).connect(destination);
+      source.start();
+      return gain;
+    };
+
+    // Cylinder body tone: low sawtooth + triangle an octave up.
+    const cylinderGain = ctx.createGain();
+    cylinderGain.gain.setValueAtTime(0, t);
+    cylinderGain.connect(blockFilter);
+    const oscillator = (type: OscillatorType, frequency: number, destination: AudioNode): OscillatorNode => {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(frequency, t);
+      osc.connect(destination);
+      osc.start();
+      return osc;
+    };
+    const cylinderOsc1 = oscillator('sawtooth', 10, cylinderGain);
+    const cylinderOsc2 = oscillator('triangle', 20, cylinderGain);
+
+    // Starter whine bypasses the block filter so it stays bright.
+    const starterGain = ctx.createGain();
+    starterGain.gain.setValueAtTime(0, t);
+    starterGain.connect(master);
+    const starterOsc = oscillator('sine', 180, starterGain);
+    oscillator('triangle', 90, starterGain);
+
+    return {
+      ctx,
+      master,
+      blockFilter,
+      cylinderOsc1,
+      cylinderOsc2,
+      cylinderGain,
+      airGain: noiseLayer('bandpass', 800, 1.0, blockFilter),
+      fanGain: noiseLayer('bandpass', 420, 0.7, master),
+      starterOsc,
+      starterGain,
+      noise,
+      crunch: makeDistortionCurve(40),
+      heavyCrunch: makeDistortionCurve(100),
+    };
   }
 
-  private setupAirNoise() {
-    if (!this.ctx || !this.blockFilter) return;
+  update(frame: AudioFrame): void {
+    const g = this.graph;
+    if (!g) return;
+    this.resume(g.ctx);
+    const now = g.ctx.currentTime;
+    const { rpm, throttle, damage } = frame;
 
-    // Standard script processor for noise (broadly supported fallback)
-    try {
-      const bufferSize = 4096;
-      const provider = this.ctx.createScriptProcessor ? this.ctx.createScriptProcessor(bufferSize, 1, 1) : null;
-      if (provider) {
-        provider.onaudioprocess = (e) => {
-          const output = e.outputBuffer.getChannelData(0);
-          for (let i = 0; i < bufferSize; i++) {
-            // White noise
-            output[i] = Math.random() * 2 - 1;
-          }
-        };
+    g.blockFilter.frequency.setTargetAtTime(blockFilterFreq(rpm, damage), now, 0.1);
 
-        this.airGain = this.ctx.createGain();
-        this.airGain.gain.setValueAtTime(0, this.ctx.currentTime);
+    g.starterGain.gain.setTargetAtTime(frame.cranking ? 0.18 : 0, now, frame.cranking ? 0.05 : 0.1);
+    if (frame.cranking) g.starterOsc.frequency.setTargetAtTime(starterFreq(rpm), now, 0.1);
 
-        const airFilter = this.ctx.createBiquadFilter();
-        airFilter.type = 'bandpass';
-        airFilter.frequency.setValueAtTime(800, this.ctx.currentTime);
-        airFilter.Q.setValueAtTime(1.0, this.ctx.currentTime);
+    if (frame.running && rpm > 50) {
+      g.cylinderOsc1.frequency.setTargetAtTime(bodyToneFreq(rpm), now, 0.05);
+      g.cylinderOsc2.frequency.setTargetAtTime(bodyToneHarmonicFreq(rpm), now, 0.05);
+      g.cylinderGain.gain.setTargetAtTime(bodyToneGain(throttle, damage), now, 0.05);
 
-        provider.connect(airFilter);
-        airFilter.connect(this.airGain);
-        this.airGain.connect(this.blockFilter);
-
-        this.airNoise = provider as any;
-      }
-    } catch (e) {
-      console.error("Failed to build noise generator:", e);
-    }
-  }
-
-  // Set sound properties in real-time
-  update(
-    rpm: number,
-    throttle: number,
-    isStarting: boolean,
-    isRunning: boolean,
-    damageLevel: number,
-    cylinderTemperature: number,
-    fanLevel: number = 0
-  ) {
-    this.ensureContextRunning();
-    if (!this.ctx) return;
-
-    const now = this.ctx.currentTime;
-
-    // Low oil density / high damage creates metallic high-pitch filter changes
-    if (this.blockFilter) {
-      this.blockFilter.frequency.setTargetAtTime(blockFilterFreq(rpm, damageLevel), now, 0.1);
-    }
-
-    // 1. Starter Whine
-    if (isStarting) {
-      this.starterGain?.gain.setTargetAtTime(0.18, now, 0.05);
-      this.starterOsc?.frequency.setTargetAtTime(starterFreq(rpm), now, 0.1);
-    } else {
-      this.starterGain?.gain.setTargetAtTime(0, now, 0.1);
-    }
-
-    // 2. Engine body tone — low rumble bed under the discrete exhaust pulses.
-    if (isRunning && rpm > 50) {
-      this.cylinderOsc1?.frequency.setTargetAtTime(bodyToneFreq(rpm), now, 0.05);
-      this.cylinderOsc2?.frequency.setTargetAtTime(bodyToneHarmonicFreq(rpm), now, 0.05);
-      this.cylinderGain?.gain.setTargetAtTime(bodyToneGain(throttle, damageLevel), now, 0.05);
-
-      // 2b. Schedule discrete combustion pulses at the firing frequency.
+      // Schedule discrete exhaust pulses a little ahead to keep cadence tight.
       const period = firingPeriod(rpm);
       if (this.nextPulseTime < now) this.nextPulseTime = now + 0.02;
-      // Schedule a little ahead to keep cadence tight without flooding.
-      let guard = 0;
-      while (this.nextPulseTime < now + 0.12 && guard < 16) {
-        this.schedulePulse(this.nextPulseTime, rpm, throttle, damageLevel);
+      for (let guard = 0; guard < 16 && this.nextPulseTime < now + 0.12; guard++) {
+        this.schedulePulse(g, this.nextPulseTime, rpm, throttle, damage);
         this.nextPulseTime += period;
-        guard++;
       }
+      g.airGain.gain.setTargetAtTime(airRushGain(rpm, throttle), now, 0.1);
     } else {
-      this.cylinderGain?.gain.setTargetAtTime(0, now, 0.15);
+      g.cylinderGain.gain.setTargetAtTime(0, now, 0.15);
+      g.airGain.gain.setTargetAtTime(0, now, 0.15);
       this.nextPulseTime = 0;
     }
 
-    // 3. Air Rush (Induction) — louder with throttle (butterfly whoosh)
-    if (isRunning && this.airGain) {
-      this.airGain.gain.setTargetAtTime(airRushGain(rpm, throttle), now, 0.1);
-    } else {
-      this.airGain?.gain.setTargetAtTime(0, now, 0.15);
-    }
-
-    // 4. Cooling fan airflow
-    if (this.fanGain) {
-      this.fanGain.gain.setTargetAtTime(fanGain(fanLevel, cylinderTemperature), now, 0.2);
-    }
+    g.fanGain.gain.setTargetAtTime(fanGain(frame.fanLevel, frame.coolantTemp), now, 0.2);
   }
 
-  /** A single short exhaust pulse "thump" scheduled at an absolute time. */
-  private schedulePulse(when: number, rpm: number, throttle: number, damageLevel: number) {
-    if (!this.ctx) return;
-    const dest = this.blockFilter ?? this.mainGain;
-    if (!dest) return;
-
-    const osc = this.ctx.createOscillator();
+  private schedulePulse(g: Graph, when: number, rpm: number, throttle: number, damage: number): void {
+    const osc = g.ctx.createOscillator();
     osc.type = 'triangle';
-    const { startFreq, endFreq, peakGain, decay } = exhaustPulseShape(rpm, throttle, damageLevel, Math.random());
+    const { startFreq, endFreq, peakGain, decay } = exhaustPulseShape(rpm, throttle, damage, Math.random());
     osc.frequency.setValueAtTime(startFreq, when);
     osc.frequency.exponentialRampToValueAtTime(endFreq, when + 0.05);
 
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.0001, when);
-    g.gain.exponentialRampToValueAtTime(peakGain, when + 0.004);
-    g.gain.exponentialRampToValueAtTime(0.0001, when + decay);
+    const gain = g.ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, when);
+    gain.gain.exponentialRampToValueAtTime(peakGain, when + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, when + decay);
 
-    osc.connect(g);
-    g.connect(dest);
+    osc.connect(gain).connect(g.blockFilter);
     osc.start(when);
     osc.stop(when + decay + 0.02);
   }
 
-  /** Lean-pop / rev-limiter backfire crackle. */
-  triggerBackfire() {
-    this.ensureContextRunning();
-    if (!this.ctx || this.isMuted) return;
-    const now = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(140 + Math.random() * 120, now);
-    osc.frequency.exponentialRampToValueAtTime(50, now + 0.08);
-    const shaper = this.ctx.createWaveShaper();
-    shaper.curve = makeDistortionCurve(80);
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.22, now);
-    g.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-    osc.connect(shaper);
-    shaper.connect(g);
-    g.connect(this.mainGain!);
+  /** A short enveloped oscillator, optionally through a distortion curve. */
+  private blip(
+    g: Graph,
+    opts: {
+      type: OscillatorType;
+      freq: number;
+      endFreq?: number;
+      gain: number;
+      duration: number;
+      curve?: WaveShaperNode['curve'];
+      oversample?: OverSampleType;
+      destination?: AudioNode;
+    }
+  ): void {
+    const now = g.ctx.currentTime;
+    const osc = g.ctx.createOscillator();
+    osc.type = opts.type;
+    osc.frequency.setValueAtTime(opts.freq, now);
+    if (opts.endFreq !== undefined) osc.frequency.exponentialRampToValueAtTime(opts.endFreq, now + opts.duration * 0.7);
+
+    const gain = g.ctx.createGain();
+    gain.gain.setValueAtTime(opts.gain, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + opts.duration);
+
+    let head: AudioNode = osc;
+    if (opts.curve) {
+      const shaper = g.ctx.createWaveShaper();
+      shaper.curve = opts.curve;
+      if (opts.oversample) shaper.oversample = opts.oversample;
+      head = head.connect(shaper);
+    }
+    head.connect(gain).connect(opts.destination ?? g.master);
     osc.start(now);
-    osc.stop(now + 0.14);
+    osc.stop(now + opts.duration + 0.02);
   }
 
-  // High-fidelity instant combustion explosion tick
-  triggerCombustion(rpm: number, throttle: number, isKnocking: boolean) {
-    this.ensureContextRunning();
-    if (!this.ctx || this.isMuted) return;
-
-    const now = this.ctx.currentTime;
-
-    // Short sub-harmonic burst
-    const combustionOsc = this.ctx.createOscillator();
-    combustionOsc.type = 'triangle';
-    combustionOsc.frequency.setValueAtTime(45 + Math.random() * 10, now);
-    
-    // Add distortion for power!
-    const distortion = this.ctx.createWaveShaper();
-    distortion.curve = makeDistortionCurve(40);
-    distortion.oversample = '4x';
-
-    const gainNode = this.ctx.createGain();
-    const { peakGain, decay: decayDuration } = combustionShape(rpm, throttle);
-    gainNode.gain.setValueAtTime(peakGain, now);
-    gainNode.gain.exponentialRampToValueAtTime(0.001, now + decayDuration);
-
-    combustionOsc.connect(distortion);
-    distortion.connect(gainNode);
-    if (this.blockFilter) {
-      gainNode.connect(this.blockFilter);
-    } else {
-      gainNode.connect(this.mainGain!);
-    }
-
-    combustionOsc.start(now);
-    combustionOsc.stop(now + decayDuration + 0.02);
-
-    // If knocking (pre-ignition or critical rod wear), trigger high frequency metal "clank"
-    if (isKnocking) {
-      this.triggerMetalKling(decayDuration);
-    }
+  spark(): void {
+    const g = this.graph;
+    if (!g || this.muted) return;
+    this.resume(g.ctx);
+    this.blip(g, { type: 'sine', freq: 3200, gain: 0.03, duration: 0.005 });
   }
 
-  private triggerMetalKling(decayDuration: number) {
-    if (!this.ctx) return;
-    const now = this.ctx.currentTime;
+  combustion(rpm: number, throttle: number, knocking: boolean): void {
+    const g = this.graph;
+    if (!g || this.muted) return;
+    this.resume(g.ctx);
+    const now = g.ctx.currentTime;
+    if (now - this.lastCombustionTime < MIN_COMBUSTION_GAP_S) return;
+    this.lastCombustionTime = now;
 
-    const osc = this.ctx.createOscillator();
-    osc.type = 'sine';
-    // metallic frequency
-    osc.frequency.setValueAtTime(1100 + Math.random() * 400, now);
+    const { peakGain, decay } = combustionShape(rpm, throttle);
+    this.blip(g, {
+      type: 'triangle',
+      freq: 45 + Math.random() * 10,
+      gain: peakGain,
+      duration: decay,
+      curve: g.crunch,
+      oversample: '4x',
+      destination: g.blockFilter,
+    });
 
-    const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(0.12, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.015);
-
-    osc.connect(gain);
-    gain.connect(this.mainGain!);
-    osc.start(now);
-    osc.stop(now + 0.03);
+    // Pre-ignition or a worn rod: a metallic "clank".
+    if (knocking) this.blip(g, { type: 'sine', freq: 1100 + Math.random() * 400, gain: 0.12, duration: 0.015 });
   }
 
-  // Trigger spark discharge sound
-  triggerSpark() {
-    this.ensureContextRunning();
-    if (!this.ctx || this.isMuted) return;
-
-    const now = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(3200, now);
-
-    const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(0.03, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.005);
-
-    osc.connect(gain);
-    gain.connect(this.mainGain!);
-    osc.start(now);
-    osc.stop(now + 0.01);
+  backfire(): void {
+    const g = this.graph;
+    if (!g || this.muted) return;
+    this.resume(g.ctx);
+    this.blip(g, {
+      type: 'sawtooth',
+      freq: 140 + Math.random() * 120,
+      endFreq: 50,
+      gain: 0.22,
+      duration: 0.12,
+      curve: g.heavyCrunch,
+    });
   }
 
-  // Trigger explosion / mechanical boom sound
-  triggerExplosion() {
-    this.ensureContextRunning();
-    if (!this.ctx) return;
+  explosion(): void {
+    const g = this.graph;
+    if (!g) return;
+    this.resume(g.ctx);
+    this.blip(g, {
+      type: 'sawtooth',
+      freq: 60,
+      endFreq: 10,
+      gain: 0.8,
+      duration: 0.8,
+      curve: g.heavyCrunch,
+    });
+    this.blip(g, { type: 'sawtooth', freq: 800, gain: 0.3, duration: 0.4 });
 
-    const now = this.ctx.currentTime;
-
-    // Huge booming noise with heavy decay
-    const noiseOsc = this.ctx.createOscillator();
-    noiseOsc.type = 'sawtooth';
-    noiseOsc.frequency.setValueAtTime(60, now);
-    noiseOsc.frequency.linearRampToValueAtTime(10, now + 0.8);
-
-    const gainNode = this.ctx.createGain();
-    gainNode.gain.setValueAtTime(0.8, now);
-    gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
-
-    // Distortion
-    const shaper = this.ctx.createWaveShaper();
-    shaper.curve = makeDistortionCurve(100);
-
-    noiseOsc.connect(shaper);
-    shaper.connect(gainNode);
-    gainNode.connect(this.mainGain!);
-
-    noiseOsc.start(now);
-    noiseOsc.stop(now + 0.8);
-
-    // Metallic shatter ringing
-    const ringOsc = this.ctx.createOscillator();
-    ringOsc.type = 'sawtooth';
-    ringOsc.frequency.setValueAtTime(800, now);
-
-    const ringGain = this.ctx.createGain();
-    ringGain.gain.setValueAtTime(0.3, now);
-    ringGain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
-
-    ringOsc.connect(ringGain);
-    ringGain.connect(this.mainGain!);
-    ringOsc.start(now);
-    ringOsc.stop(now + 0.52);
-
-    // Immediately quieten down all normal signals
-    this.cylinderGain?.gain.setTargetAtTime(0, now, 0.01);
-    this.airGain?.gain.setTargetAtTime(0, now, 0.01);
+    // Immediately quieten the normal signals.
+    const now = g.ctx.currentTime;
+    g.cylinderGain.gain.setTargetAtTime(0, now, 0.01);
+    g.airGain.gain.setTargetAtTime(0, now, 0.01);
   }
 
-  setMute(muted: boolean) {
-    this.isMuted = muted;
-    if (this.mainGain && this.ctx) {
-      this.mainGain.gain.setValueAtTime(muted ? 0 : this.volume, this.ctx.currentTime);
-    }
+  setMute(muted: boolean): void {
+    this.muted = muted;
+    this.applyMaster();
   }
 
-  setVolume(vol: number) {
-    this.volume = vol;
-    if (this.mainGain && this.ctx && !this.isMuted) {
-      this.mainGain.gain.setValueAtTime(vol, this.ctx.currentTime);
-    }
+  setVolume(volume: number): void {
+    this.volume = volume;
+    this.applyMaster();
   }
 
-  private ensureContextRunning() {
-    if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
-    }
+  private applyMaster(): void {
+    const g = this.graph;
+    if (g) g.master.gain.setValueAtTime(this.muted ? 0 : this.volume, g.ctx.currentTime);
+  }
+
+  private resume(ctx: AudioContext): void {
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   }
 }
 

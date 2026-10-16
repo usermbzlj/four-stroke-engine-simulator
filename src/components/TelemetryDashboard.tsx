@@ -4,7 +4,8 @@
  */
 
 import type { ReactNode } from 'react';
-import { TelemetryPoint, LogMessage } from '../types';
+import type { TelemetryPoint, LogMessage } from '../types';
+import { THERMAL } from '../engine';
 import { Activity, Thermometer, Zap, Gauge, AlertCircle, Droplet, Waves } from 'lucide-react';
 
 interface TelemetryDashboardProps {
@@ -81,17 +82,20 @@ export default function TelemetryDashboard({ stats, history, logs, redlineRpm, o
 
   const warnRpm = redlineRpm * 0.82;
   const isReady = rpm < 30;
-  const isCritical = temp > 115 || rpm > redlineRpm || (stats.oilPressure < 0.8 && rpm > 350);
-  const isWarning = !isCritical && (temp > 92 || rpm > warnRpm || (stats.oilPressure < 1.4 && rpm > 350));
+  const isCritical =
+    temp > THERMAL.warnTemp || rpm > redlineRpm || stats.knock > 15 || (stats.oilPressure < 0.8 && rpm > 350);
+  const isWarning =
+    !isCritical &&
+    (temp > THERMAL.warnTemp - 12 || rpm > warnRpm || stats.knock > 0 || (stats.oilPressure < 1.4 && rpm > 350));
   const statusTone: Tone = isCritical ? 'red' : isWarning ? 'amber' : isReady ? 'slate' : 'emerald';
   const statusLabel = isCritical ? 'CRITICAL' : isWarning ? 'WATCH' : isReady ? 'READY' : 'STABLE';
 
   const rpmPercent = (rpm / Math.max(1, redlineRpm)) * 100;
-  const tempPercent = ((temp - 30) / 105) * 100;
+  const tempPercent = ((temp - 30) / (THERMAL.seizeTemp - 30)) * 100;
   const oilPercent = (stats.oilPressure / 5.5) * 100;
   const pressurePercent = (stats.pressure / 75) * 100;
   const torquePercent = (stats.torque / 70) * 100;
-  const trend = history.length > 6 ? rpm - history[Math.max(0, history.length - 6)].rpm : 0;
+  const trend = history.length > 6 ? rpm - (history.at(-6)?.rpm ?? rpm) : 0;
   const trendLabel = isReady ? '停机待命' : Math.abs(trend) < 35 ? '转速稳定' : trend > 0 ? `上升 +${Math.round(trend)} rpm` : `下降 ${Math.round(trend)} rpm`;
 
   const renderHistoryChart = () => {
@@ -222,7 +226,7 @@ export default function TelemetryDashboard({ stats, history, logs, redlineRpm, o
         </div>
       </div>
 
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
         <MetricTile
           title="扭矩"
           value={torque}
@@ -236,10 +240,27 @@ export default function TelemetryDashboard({ stats, history, logs, redlineRpm, o
           title="热管理"
           value={`${temp}`}
           unit="°C"
-          caption={temp > 105 ? '过热风险' : temp > 88 ? '接近热区' : '温度正常'}
+          caption={
+            temp > THERMAL.warnTemp
+              ? '过热！爆震极限下降'
+              : temp > THERMAL.warnTemp - 12
+              ? '接近热区'
+              : temp < THERMAL.thermostatTemp - 8
+              ? '暖机中'
+              : '温度正常'
+          }
           icon={<Thermometer className="w-3.5 h-3.5" />}
-          tone={temp > 115 ? 'red' : temp > 92 ? 'amber' : 'orange'}
+          tone={temp > THERMAL.warnTemp ? 'red' : temp > THERMAL.warnTemp - 12 ? 'amber' : 'orange'}
           percent={tempPercent}
+        />
+        <MetricTile
+          title="爆震"
+          value={`${Math.round(stats.knock)}`}
+          unit="%"
+          caption={stats.knock > 15 ? '正在敲缸，回退点火角' : stats.knock > 0 ? '轻微爆震' : '燃烧平稳'}
+          icon={<AlertCircle className="w-3.5 h-3.5" />}
+          tone={stats.knock > 15 ? 'red' : stats.knock > 0 ? 'amber' : 'emerald'}
+          percent={stats.knock}
         />
         <MetricTile
           title="润滑"

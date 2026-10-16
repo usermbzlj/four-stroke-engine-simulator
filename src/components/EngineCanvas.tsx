@@ -3,13 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useRef, useEffect, useState, MouseEvent } from 'react';
-import { EngineState, StrokeType, ComponentWear } from '../types';
+import { useEffect, useEffectEvent, useRef, useState, type MouseEvent, type Touch, type TouchEvent } from 'react';
+import { EngineState, StrokeType, type ComponentWear } from '../types';
 import { advanceReadableCrankAngle, getReadableVisualRpm, strokeFromCrankAngle } from '../utils/engineVisuals';
-import { Particle, spawnExplosion, spawnSeizureSparks, spawnStrokeParticles } from './engineCanvasParticles';
+import { spawnExplosion, spawnSeizureSparks, spawnStrokeParticles, type Particle } from './engineCanvasParticles';
 import {
   CANVAS_GEOMETRY,
-  EngineScene,
+  type EngineScene,
   drawBackdrop,
   drawChamberWash,
   drawCrankcase,
@@ -29,7 +29,8 @@ import {
 interface EngineCanvasProps {
   state: EngineState;
   stroke: StrokeType;
-  crankAngle: number; // in radians
+  /** Live crank angle in radians. Read once per painted frame, outside React state. */
+  getCrankAngle: () => number;
   throttle: number;
   oilLevel: number;
   temperature: number; // calculated celsius
@@ -47,7 +48,7 @@ const { W_WIDTH, W_HEIGHT, CX, CRANK_Y, R_RADIUS } = CANVAS_GEOMETRY;
 export default function EngineCanvas({
   state,
   stroke,
-  crankAngle,
+  getCrankAngle,
   throttle,
   oilLevel,
   temperature,
@@ -64,13 +65,24 @@ export default function EngineCanvas({
   const sparkTriggerRef = useRef<boolean>(false);
   const lastStateRef = useRef<EngineState>(state);
   const lastRenderTimeRef = useRef<number>(0);
-  const visualAngleRef = useRef<number>(crankAngle);
+  const visualAngleRef = useRef<number>(0);
   const [isDragging, setIsDragging] = useState(false);
 
-  // Mirror live props into a ref so the rAF loop reads fresh values without
-  // re-subscribing the effect each render.
-  const propsRef = useRef({ state, stroke, crankAngle, throttle, oilLevel, temperature, oilPressure, wear, nosActive, redlineRpm, rpm });
-  propsRef.current = { state, stroke, crankAngle, throttle, oilLevel, temperature, oilPressure, wear, nosActive, redlineRpm, rpm };
+  // The paint loop outlives any single render, so it reads the latest props
+  // through an Effect Event instead of re-subscribing every frame.
+  const readScene = useEffectEvent(() => ({
+    state,
+    stroke,
+    crankAngle: getCrankAngle(),
+    throttle,
+    oilLevel,
+    temperature,
+    oilPressure,
+    wear,
+    nosActive,
+    redlineRpm,
+    rpm,
+  }));
 
   // One-shot explosion particle burst on the OFF->EXPLODED edge.
   useEffect(() => {
@@ -91,7 +103,7 @@ export default function EngineCanvas({
     let frameId: number;
 
     const render = () => {
-      const props = propsRef.current;
+      const props = readScene();
 
       const now = performance.now();
       const dt = lastRenderTimeRef.current ? Math.min(0.05, (now - lastRenderTimeRef.current) / 1000) : 1 / 60;
@@ -226,7 +238,8 @@ export default function EngineCanvas({
 
   const handleMouseUpOrLeave = () => setIsDragging(false);
 
-  const getCanvasCoords = (touch: React.Touch) => {
+  const getCanvasCoords = (touch: Touch | undefined) => {
+    if (!touch) return null;
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
@@ -236,7 +249,7 @@ export default function EngineCanvas({
     };
   };
 
-  const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+  const handleTouchStart = (e: TouchEvent<HTMLCanvasElement>) => {
     if (isDead) return;
     e.preventDefault();
     const coords = getCanvasCoords(e.touches[0]);
@@ -250,7 +263,7 @@ export default function EngineCanvas({
     }
   };
 
-  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+  const handleTouchMove = (e: TouchEvent<HTMLCanvasElement>) => {
     if (!isDragging || !onCrankDrag) return;
     e.preventDefault();
     const coords = getCanvasCoords(e.touches[0]);

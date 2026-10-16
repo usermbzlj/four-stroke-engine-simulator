@@ -1,6 +1,0 @@
-{
-  "name": "Four-Stroke Engine Simulator",
-  "description": "A high-fidelity cross-section simulator of a 4-stroke internal combustion engine with physical simulation, adjustable parameters, engine status feedback (stall, damage, explosion), real-time logs, performance monitoring, and component wear tracking. Runs fully client-side with no external APIs.",
-  "requestFramePermissions": [],
-  "majorCapabilities": []
-}

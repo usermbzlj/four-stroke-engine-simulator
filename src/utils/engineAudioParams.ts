@@ -97,8 +97,8 @@ export function combustionShape(rpm: number, throttle: number): { peakGain: numb
  * classic `((3+k)·x·20°)/(π + k·|x|)` soft-clip used for the combustion/backfire
  * crunch. Exposed for testing the curve's shape (odd symmetry, bounded output).
  */
-export function makeDistortionCurve(amount: number, nSamples: number = 44100): Float32Array {
-  const k = typeof amount === 'number' ? amount : 50;
+export function makeDistortionCurve(amount: number, nSamples: number = 44100): Float32Array<ArrayBuffer> {
+  const k = amount;
   const curve = new Float32Array(nSamples);
   const deg = Math.PI / 180;
   for (let i = 0; i < nSamples; ++i) {

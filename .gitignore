@@ -27,5 +27,7 @@ Thumbs.db
 .env
 .env.*
 
-# Misc
-server.js
+
+# Test caches
+.vitest-cache/
+*.tsbuildinfo

@@ -1,472 +1,257 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Layout only. The live engine and the career are long-lived objects owned by
+ * `game.ts`; this file reads them through hooks and lays out the cross-section
+ * plus a tabbed workbench.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ChallengeId,
-  ChallengeProgress,
-  ComponentWear,
-  DynoResult,
-  EngineState,
-  GarageState,
-  TunePreset,
-} from './types';
-import EngineCanvas from './components/EngineCanvas';
-import TelemetryDashboard from './components/TelemetryDashboard';
-import ControlPanel from './components/ControlPanel';
-import WearTracker from './components/WearTracker';
+import { Cpu, Gauge, LineChart, Trophy, Wrench, type LucideIcon } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import AppHeader from './components/AppHeader';
+import CareerPanel from './components/CareerPanel';
+import ContractBanner from './components/ContractBanner';
+import ControlDeck from './components/ControlDeck';
+import CycleExplainer from './components/CycleExplainer';
 import DynoPanel from './components/DynoPanel';
-import ChallengePanel from './components/ChallengePanel';
-import { useEngineSimulation } from './hooks/useEngineSimulation';
-import {
-  CHALLENGES,
-  ECONOMY,
-  ENGINE_SPECS,
-  INITIAL_CHALLENGE,
-  challengeReward,
-  challengeScore,
-  displacementCc,
-  dynoCreditReward,
-  dynoScoreGain,
-  loadProgress,
-  runDynoSweep,
-  saveProgress,
-  tickChallenge,
-} from './engine';
-import { engineAudio } from './utils/engineAudio';
-import { ShieldAlert, Hammer } from 'lucide-react';
+import EngineCanvas from './components/EngineCanvas';
+import GarageShop from './components/GarageShop';
+import Onboarding from './components/Onboarding';
+import TelemetryDashboard from './components/TelemetryDashboard';
+import TuneEditor from './components/TuneEditor';
+import WearTracker from './components/WearTracker';
+import { ECONOMY } from './engine';
+import { garage as garageStore, pointerControls, runtime, startGame } from './game';
+import { useGarage, useRuntime } from './hooks/useGame';
+import { useKeyboardControls } from './hooks/useKeyboardControls';
+import { rebuildCostFor, repairCostFor } from './store/garageStore';
+import { useLogStore } from './store/logStore';
+import { useSettingsStore } from './store/settingsStore';
+import { useTutorialStore } from './store/tutorialStore';
+import { EngineState } from './types';
+
+type TabId = 'drive' | 'tune' | 'dyno' | 'garage' | 'career';
+
+const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
+  { id: 'drive', label: '驾驶台', icon: Gauge },
+  { id: 'tune', label: 'ECU 标定', icon: Cpu },
+  { id: 'dyno', label: '测功机', icon: LineChart },
+  { id: 'garage', label: '车间', icon: Wrench },
+  { id: 'career', label: '生涯', icon: Trophy },
+];
+
+const { buyAndInstall, buyBlock, setTune, applyAutoTune, savePreset, applyPreset, deletePreset } =
+  garageStore.getState();
 
 export default function App() {
-  // ---- Persisted progress (loaded once) ----
-  const persisted = useRef(loadProgress());
+  const [tab, setTab] = useState<TabId>('drive');
 
-  // ---- Engine simulation (physics, audio, telemetry) ----
-  const challengeRef = useRef<ChallengeProgress>(INITIAL_CHALLENGE);
-  // `garageRef` is the authoritative, high-frequency store for credits/score/
-  // runtime-hours (mutated from the rAF tick). React state mirrors it for render
-  // + persistence. Both start from the same loaded snapshot.
-  const garageRef = useRef<GarageState>({ ...persisted.current.garage });
-  const idleStableRef = useRef(0);
+  useEffect(() => startGame(), []);
 
-  const sim = useEngineSimulation({
-    onTick: ({ dt, rpm, wear, engineState, runningHoursDelta }) => {
-      // Accumulate engine "mileage" into the authoritative ref, then mirror to
-      // React state so it displays and persists (throttled to the tick cadence).
-      if (runningHoursDelta > 0) {
-        garageRef.current = { ...garageRef.current, runtimeHours: garageRef.current.runtimeHours + runningHoursDelta };
-        setGarage(garageRef.current);
-      }
-      // Advance any active challenge.
-      const tick = tickChallenge({
-        progress: challengeRef.current,
-        idleStableSeconds: idleStableRef.current,
-        dt,
-        rpm,
-        wear,
-        engineState,
-        spec: sim.specRef.current,
-        now: performance.now(),
-      });
-      idleStableRef.current = tick.idleStableSeconds;
-      challengeRef.current = tick.progress;
-      if (tick.finished) {
-        finishChallenge(tick.finished.passed, tick.finished.value);
+  const { engineState, stroke, spec, controls, wear, liveStats, history, hud, dyno } = useRuntime((s) => s);
+  const logs = useLogStore((s) => s.logs);
+  const clearLogs = useLogStore((s) => s.clear);
+  const tutorial = useTutorialStore((s) => s.progress);
+  const volume = useSettingsStore((s) => s.volume);
+  const muted = useSettingsStore((s) => s.muted);
+  const setVolume = useSettingsStore((s) => s.setVolume);
+  const toggleMuted = useSettingsStore((s) => s.toggleMuted);
+
+  const garage = useGarage((s) => s.garage);
+  const build = useGarage((s) => s.build);
+  const tune = useGarage((s) => s.tune);
+  const presets = useGarage((s) => s.presets);
+  const onboarded = useGarage((s) => s.onboarded);
+  const contract = useGarage((s) => s.contract);
+
+  useKeyboardControls({
+    onKill: () => runtime.toggleCutoff(),
+    onSpark: () => runtime.manualSpark(),
+    onChoke: () => runtime.toggleChoke(),
+    onDyno: () => {
+      if (runtime.isDynoRunning()) {
+        runtime.abortDyno();
       } else {
-        setChallenge(challengeRef.current);
+        setTab('dyno');
+        runtime.startDyno();
       }
+    },
+    onEscape: () => {
+      if (runtime.isDynoRunning()) runtime.abortDyno();
+      else garageStore.getState().abortContract();
+    },
+    onSelectTab: (index) => {
+      const target = TABS[index];
+      if (target) setTab(target.id);
     },
   });
 
-  const { engineState, spec, params, wear, liveStats, history, logs, addLog } = sim;
+  const wrecked = engineState === EngineState.EXPLODED || engineState === EngineState.SEIZED;
 
-  // ---- Audio settings ----
-  const [soundVolume, setSoundVolume] = useState(0.35);
-  const [soundMuted, setSoundMuted] = useState(false);
-  useEffect(() => engineAudio.setVolume(soundVolume), [soundVolume]);
-  useEffect(() => engineAudio.setMute(soundMuted), [soundMuted]);
+  const handleTuneChange = (next: typeof tune) => {
+    setTune(next);
+    useTutorialStore.getState().mark('tuned');
+  };
 
-  // ---- Gameplay state (mirrors persisted refs for rendering) ----
-  const [garage, setGarage] = useState<GarageState>({ ...persisted.current.garage });
-  const [challenge, setChallenge] = useState<ChallengeProgress>({
-    ...INITIAL_CHALLENGE,
-    best: persisted.current.best,
-  });
-  const [presets, setPresets] = useState<TunePreset[]>(persisted.current.presets);
-  // `challengeRef` mirrors challenge state every render (challenge is only ever
-  // mutated via setChallenge). `garageRef` is authoritative and must NOT be
-  // overwritten from state here, or rAF-accumulated runtime-hours would be lost.
-  challengeRef.current = challenge;
-
-  const [dynoResult, setDynoResult] = useState<DynoResult | null>(null);
-  const [dynoRunning, setDynoRunning] = useState(false);
-  const [dynoProgress, setDynoProgress] = useState(0);
-
-  // Persist progress whenever the durable bits change.
-  useEffect(() => {
-    saveProgress({ garage, presets, best: challenge.best });
-  }, [garage, presets, challenge.best]);
-
-  const updateGarage = useCallback((patch: Partial<GarageState>) => {
-    setGarage((prev) => {
-      const next = { ...prev, ...patch };
-      garageRef.current = next;
-      return next;
-    });
-  }, []);
-
-  // ---- Maintenance with economy ----
-  const handleRepairComponentPaid = useCallback(
-    (key: keyof ComponentWear) => {
-      if (engineState === EngineState.EXPLODED) {
-        addLog('error', '发动机缸体由于爆裂碎裂损毁。无法进行局部修理，必须彻底大修。');
-        return;
-      }
-      if (sim.wear[key] >= 99.5) {
-        addLog('info', '该部件状态良好，无需维修。');
-        return;
-      }
-      if (garageRef.current.credits < ECONOMY.repairCost) {
-        addLog('error', `信用点不足！局部维修需要 ${ECONOMY.repairCost} CR，可通过完成挑战/拉力测试赚取。`);
-        return;
-      }
-      updateGarage({ credits: garageRef.current.credits - ECONOMY.repairCost });
-      sim.repairComponent(key);
-    },
-    [engineState, sim, addLog, updateGarage]
-  );
-
-  const handleCompleteRebuild = useCallback(() => {
-    const isWrecked = engineState === EngineState.EXPLODED || engineState === EngineState.SEIZED;
-    if (!isWrecked) {
-      if (garageRef.current.credits < ECONOMY.rebuildCost) {
-        addLog('error', `信用点不足！完整大修需要 ${ECONOMY.rebuildCost} CR。`);
-        return;
-      }
-      updateGarage({ credits: garageRef.current.credits - ECONOMY.rebuildCost });
-    }
-    sim.completeRebuild({ free: isWrecked });
-  }, [engineState, sim, addLog, updateGarage]);
-
-  // ---- Tune presets ----
-  const handleSavePreset = useCallback(() => {
-    const name = `T${presets.length + 1} · ${params.fuelAirRatio.toFixed(2)}λ/${params.ignitionTiming}°`;
-    const preset: TunePreset = {
-      name,
-      params: {
-        fuelAirRatio: params.fuelAirRatio,
-        ignitionTiming: params.ignitionTiming,
-        limiterRpm: params.limiterRpm,
-        hasLimiter: params.hasLimiter,
-        coolantPump: params.coolantPump,
-      },
-    };
-    setPresets((prev) => [...prev, preset].slice(-6));
-    addLog('success', `已保存 ECU 调校预设：${name}`);
-  }, [presets.length, params, addLog]);
-
-  const handleApplyPreset = useCallback(
-    (p: TunePreset) => {
-      sim.setParams({ ...p.params });
-      addLog('info', `已载入 ECU 调校预设：${p.name}`);
-    },
-    [sim, addLog]
-  );
-
-  // ---- Dyno pull (async sweep with progress animation) ----
-  const handleRunDyno = useCallback(() => {
-    if (dynoRunning) return;
-    if (engineState === EngineState.EXPLODED || engineState === EngineState.SEIZED) {
-      addLog('error', '发动机已损毁，无法进行测功机拉力测试。请先大修。');
-      return;
-    }
-    setDynoRunning(true);
-    setDynoProgress(0);
-    addLog('info', '测功机拉力测试启动：全油门扫描全转速域...');
-
-    const s = sim.specRef.current;
-    const p = sim.paramsRef.current;
-    const w = sim.wear;
-    const steps = 40;
-    const result = runDynoSweep(s, p.fuelAirRatio, p.ignitionTiming, w, steps);
-
-    // Animate the progress bar over the same cadence as before (~45ms/step).
-    let i = 0;
-    const tick = () => {
-      i++;
-      setDynoProgress(i / steps);
-      if (i <= steps) {
-        setTimeout(tick, 45);
-        return;
-      }
-      setDynoResult(result);
-      setDynoRunning(false);
-      setDynoProgress(1);
-
-      const reward = dynoCreditReward(result.peakPowerHp);
-      const scoreGain = dynoScoreGain(result.peakPowerHp);
-      updateGarage({
-        credits: garageRef.current.credits + reward,
-        score: garageRef.current.score + scoreGain,
-      });
-      addLog(
-        'success',
-        `拉力测试完成！峰值 ${result.peakPowerHp.toFixed(1)}HP @ ${Math.round(result.peakPowerRpm)}rpm，扭矩 ${result.peakTorqueNm.toFixed(
-          1
-        )}Nm。奖励 +${reward}CR / +${scoreGain}分。`
-      );
-
-      if (challengeRef.current.active === 'dyno' && challengeRef.current.status === 'running') {
-        finishChallenge(result.peakPowerHp >= challengeRef.current.targetValue, result.peakPowerHp);
-      }
-    };
-    tick();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dynoRunning, engineState, sim, addLog, updateGarage]);
-
-  // ---- Challenge engine ----
-  const startChallenge = useCallback(
-    (id: ChallengeId) => {
-      if (engineState === EngineState.EXPLODED || engineState === EngineState.SEIZED) {
-        addLog('error', '发动机已损毁，请先大修后再开始挑战。');
-        return;
-      }
-      let label = '';
-      let target = 0;
-      let msg = '';
-      const s = sim.specRef.current;
-      if (id === 'idle') {
-        label = '怠速稳定累计时间 (s)';
-        target = 10;
-        msg = '保持 950~1250 RPM';
-      } else if (id === 'dyno') {
-        label = '峰值马力 (HP)';
-        target = Math.max(8, Math.round((dynoResult?.peakPowerHp ?? (s.peakTorque * s.torquePeakRpm) / 7127) * 1.05));
-        msg = '调校后跑一次测功机';
-      } else if (id === 'redline') {
-        label = '冲线用时 (s, 越低越好)';
-        target = (s.redlineRpm - 200) / 1000;
-        msg = '全油门冲向红线';
-      } else {
-        label = '存活时间 (s)';
-        target = 60;
-        msg = '保持运转、勿损坏部件';
-      }
-
-      idleStableRef.current = 0;
-      const next: ChallengeProgress = {
-        ...challengeRef.current,
-        active: id,
-        startedAt: performance.now(),
-        elapsed: 0,
-        metricLabel: label,
-        metricValue: 0,
-        targetValue: target,
-        status: 'running',
-        message: msg,
-      };
-      challengeRef.current = next;
-      setChallenge(next);
-      addLog('info', `挑战开始：${CHALLENGES.find((c) => c.id === id)?.name}`);
-    },
-    [engineState, sim, dynoResult, addLog]
-  );
-
-  const stopChallenge = useCallback(() => {
-    const next: ChallengeProgress = { ...challengeRef.current, active: null, status: 'idle', message: '' };
-    challengeRef.current = next;
-    setChallenge(next);
-  }, []);
-
-  const finishChallenge = useCallback(
-    (passed: boolean, finalValue: number) => {
-      const cur = challengeRef.current;
-      if (!cur.active) return;
-      const id = cur.active;
-      const lowerBetter = id === 'redline';
-      const prevBest = cur.best[id];
-      const better = lowerBetter ? prevBest === 0 || finalValue < prevBest : finalValue > prevBest;
-      const newBest = { ...cur.best, [id]: better ? finalValue : prevBest };
-
-      let reward = 0;
-      let scoreGain = 0;
-      if (passed) {
-        reward = challengeReward(id);
-        scoreGain = challengeScore(id, finalValue);
-        updateGarage({
-          credits: garageRef.current.credits + reward,
-          score: garageRef.current.score + scoreGain,
-        });
-      }
-
-      const next: ChallengeProgress = {
-        ...cur,
-        best: newBest,
-        status: passed ? 'passed' : 'failed',
-        metricValue: finalValue,
-        message: passed ? `挑战达成！+${reward}CR / +${scoreGain}分` : '挑战失败，再接再厉',
-      };
-      challengeRef.current = next;
-      setChallenge(next);
-      addLog(passed ? 'success' : 'warning', passed ? `🏆 挑战达成！奖励 +${reward}CR / +${scoreGain}分。` : '挑战失败。');
-    },
-    [addLog, updateGarage]
-  );
+  const handleBuyPart = (partId: string) => {
+    buyAndInstall(partId);
+    useTutorialStore.getState().mark('shopped');
+  };
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center">
-      {/* HEADER NAV */}
-      <header className="w-full border-b border-slate-900 bg-slate-900/40 backdrop-blur py-5 px-6 md:px-12 flex flex-col md:flex-row md:items-center justify-between gap-4 max-w-7xl">
-        <div className="flex items-center space-x-3">
-          <div className="p-2.5 bg-gradient-to-tr from-orange-600 to-amber-500 rounded-xl shadow-md flex items-center justify-center">
-            <Hammer className="w-5 h-5 text-slate-950" />
-          </div>
-          <div className="flex flex-col">
-            <h1 className="text-xl font-bold tracking-tight text-white font-display flex items-center gap-1.5 leading-none">
-              四冲程活塞发动机物理拟真模拟器
-            </h1>
-            <p className="text-xs text-slate-400 font-mono tracking-wide mt-1">
-              {spec.name} · 排量 {Math.round(displacementCc(spec))}cc · 红线 {spec.redlineRpm}
-            </p>
-          </div>
-        </div>
+      <AppHeader spec={spec} engineState={engineState} rpm={liveStats.rpm} />
 
-        {/* Diagnostic engine status ribbon */}
-        <div className="flex items-center space-x-2 bg-slate-950 px-4 py-2 border border-slate-800 rounded-xl font-mono text-xs shadow-inner">
-          <span className="text-gray-500 text-[10px]">系统状态:</span>
-          {engineState === EngineState.RUNNING && (
-            <span className="text-emerald-500 font-extrabold flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              运转 RUNNING ({Math.round(liveStats.rpm)} RPM)
-            </span>
-          )}
-          {engineState === EngineState.STARTING && (
-            <span className="text-amber-500 font-bold animate-pulse">⚡ 起动 CRANKING...</span>
-          )}
-          {engineState === EngineState.STALLED && <span className="text-slate-500">● 熄火 STALLED</span>}
-          {engineState === EngineState.OFF && <span className="text-gray-400">● 停机 READY</span>}
-          {engineState === EngineState.SEIZED && (
-            <span className="text-orange-500 font-bold flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-orange-500"></span>
-              抱死 SEIZED
-            </span>
-          )}
-          {engineState === EngineState.EXPLODED && (
-            <span className="text-pink-500 font-extrabold flex items-center gap-1 animate-ping">💥 爆炸 EXPLODED</span>
-          )}
-        </div>
-      </header>
-
-      {/* CORE WRAPPER GRID */}
-      <div className="w-full max-w-7xl p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Side canvas (5cols) */}
-        <div className="lg:col-span-5 flex flex-col space-y-4">
+      <div className="w-full max-w-[1600px] p-3 md:p-6 grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
+        {/* ---- LEFT: the engine itself, always visible ---- */}
+        <div className="xl:col-span-5 flex flex-col gap-4 xl:sticky xl:top-4">
           <EngineCanvas
             state={engineState}
-            stroke={sim.stroke}
-            crankAngle={sim.getCrankAngle()}
-            throttle={params.throttle}
-            oilLevel={params.oilLevel}
+            stroke={stroke}
+            getCrankAngle={() => runtime.getCrankAngle()}
+            throttle={Math.max(hud.butterfly, hud.idleBypass)}
+            oilLevel={controls.oilLevel}
             temperature={liveStats.temp}
             oilPressure={liveStats.oilPressure}
             wear={wear}
-            nosActive={params.hasNitrous}
+            nosActive={hud.nitrous}
             redlineRpm={spec.redlineRpm}
             rpm={liveStats.rpm}
-            onCrankDrag={sim.crankDrag}
-            onManualSpark={sim.manualSpark}
+            onCrankDrag={(angle) => runtime.crankDrag(angle)}
+            onManualSpark={() => runtime.manualSpark()}
           />
 
-          <ChallengePanel
-            challenges={CHALLENGES}
-            progress={challenge}
-            garage={garage}
-            specs={ENGINE_SPECS}
-            currentSpecId={spec.id}
-            presets={presets}
-            onStartChallenge={startChallenge}
-            onStopChallenge={stopChallenge}
-            onSwapSpec={sim.swapSpec}
-            onApplyPreset={handleApplyPreset}
-            onSavePreset={handleSavePreset}
-          />
+          {!onboarded && (
+            <Onboarding progress={tutorial} onDismiss={() => garageStore.getState().completeOnboarding()} />
+          )}
 
-          {/* Quick instructions notes under canvas */}
-          <div className="bg-slate-900/30 border border-slate-900 rounded-xl p-4 text-xs space-y-2 text-slate-400 leading-relaxed font-sans">
-            <h3 className="font-semibold text-slate-300 font-mono flex items-center gap-1">
-              <ShieldAlert className="w-3.5 h-3.5 text-sky-400" />
-              四冲程原理及模拟说明 / How it works:
-            </h3>
-            <ul className="list-disc list-inside space-y-1.5 pl-1">
-              <li>
-                <strong className="text-blue-400 font-mono">1. 进气 (Intake):</strong> 活塞下行，进气门开启，吸入蓝色新鲜混合气（充量由油门×VE曲线决定）。
-              </li>
-              <li>
-                <strong className="text-amber-400 font-mono">2. 压缩 (Compression):</strong> 活塞上行，气门关闭，按多变过程压缩，缸压随压缩比升高。
-              </li>
-              <li>
-                <strong className="text-red-400 font-mono">3. 动力 (Power):</strong> 火花塞跳火（紫色电弧），火焰膨胀推动活塞做功。温度/压缩比过高会爆震。
-              </li>
-              <li>
-                <strong className="text-slate-300 font-mono">4. 排气 (Exhaust):</strong> 活塞上行，排气门开启，排出灰色废气。
-              </li>
-            </ul>
-          </div>
-        </div>
-
-        {/* Right Side dashboards & wear panels (7cols) */}
-        <div className="lg:col-span-7 flex flex-col space-y-6">
           <TelemetryDashboard
             stats={liveStats}
             history={history}
             logs={logs}
             redlineRpm={spec.redlineRpm}
-            onClearLogs={sim.clearLogs}
+            onClearLogs={clearLogs}
           />
+        </div>
 
-          <ControlPanel
-            state={engineState}
-            params={params}
-            volume={soundVolume}
-            isMuted={soundMuted}
-            redlineRpm={spec.redlineRpm}
-            destructRpm={spec.destructRpm}
-            onUpdateParams={sim.setParams}
-            onStartHold={sim.startHold}
-            onCutoffToggle={sim.toggleCutoff}
-            onSoundVolumeChange={setSoundVolume}
-            onSoundMuteToggle={() => setSoundMuted((m) => !m)}
-            onTriggerSpark={sim.manualSpark}
-            onResetParams={sim.resetParams}
-          />
+        {/* ---- RIGHT: tabbed workbench ---- */}
+        <div className="xl:col-span-7 flex flex-col gap-4">
+          <nav className="flex gap-1 bg-slate-900/60 border border-slate-800 rounded-xl p-1 overflow-x-auto">
+            {TABS.map((t, i) => {
+              const Icon = t.icon;
+              const active = tab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className={`flex-1 min-w-[92px] flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-mono transition-colors cursor-pointer ${
+                    active ? 'bg-slate-800 text-white shadow-inner' : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {t.label}
+                  <span className="text-[9px] text-slate-600">{i + 1}</span>
+                </button>
+              );
+            })}
+          </nav>
 
-          <DynoPanel
-            result={dynoResult}
-            isRunning={dynoRunning}
-            progress={dynoProgress}
-            canRun={engineState !== EngineState.EXPLODED && engineState !== EngineState.SEIZED}
-            onRunDyno={handleRunDyno}
-          />
+          {contract.id && contract.status === 'running' && tab !== 'career' && (
+            <ContractBanner run={contract} onOpen={() => setTab('career')} />
+          )}
 
+          {tab === 'drive' && (
+            <ControlDeck
+              state={engineState}
+              controls={controls}
+              hud={hud}
+              spec={spec}
+              volume={volume}
+              isMuted={muted}
+              dynoRunning={dyno.running}
+              onUpdateControls={(patch) => runtime.setControls(patch)}
+              onPointerThrottle={pointerControls.throttle}
+              onPointerStarter={pointerControls.starter}
+              onPointerNitrous={pointerControls.nitrous}
+              onToggleCutoff={() => runtime.toggleCutoff()}
+              onToggleChoke={() => runtime.toggleChoke()}
+              onManualSpark={() => runtime.manualSpark()}
+              onVolumeChange={setVolume}
+              onMuteToggle={toggleMuted}
+              onResetControls={() => runtime.resetControls()}
+            />
+          )}
+
+          {tab === 'tune' && (
+            <TuneEditor
+              spec={spec}
+              tune={tune}
+              wear={wear}
+              coolantTemp={liveStats.temp}
+              presets={presets}
+              onChange={handleTuneChange}
+              onAutoTune={applyAutoTune}
+              onSavePreset={savePreset}
+              onApplyPreset={applyPreset}
+              onDeletePreset={deletePreset}
+            />
+          )}
+
+          {tab === 'dyno' && (
+            <DynoPanel
+              spec={spec}
+              dyno={dyno}
+              canRun={engineState === EngineState.RUNNING && !dyno.running}
+              onRun={() => runtime.startDyno()}
+              onAbort={() => runtime.abortDyno()}
+            />
+          )}
+
+          {tab === 'garage' && (
+            <GarageShop garage={garage} build={build} spec={spec} onBuyPart={handleBuyPart} onBuyBlock={buyBlock} />
+          )}
+
+          {tab === 'career' && (
+            <CareerPanel
+              garage={garage}
+              run={contract}
+              onStart={(id) => garageStore.getState().startContract(id)}
+              onAbort={() => garageStore.getState().abortContract()}
+              onDismiss={() => garageStore.getState().dismissContract()}
+              onResetCareer={() => garageStore.getState().resetCareer()}
+            />
+          )}
+
+          {/* Diagnostics are relevant on every tab, so they live below the switcher. */}
           <WearTracker
             wear={wear}
             state={engineState}
             temp={liveStats.temp}
             rpm={liveStats.rpm}
-            oilLevel={params.oilLevel}
+            redlineRpm={spec.redlineRpm}
+            oilLevel={controls.oilLevel}
             oilPressure={liveStats.oilPressure}
+            knock={liveStats.knock}
             credits={garage.credits}
-            onRepairComponent={handleRepairComponentPaid}
-            onCompleteRebuild={handleCompleteRebuild}
-            onFlushOil={sim.flushOil}
+            oilChangeCost={ECONOMY.oilChangeCost}
+            rebuildCost={rebuildCostFor(wrecked)}
+            repairCostFor={repairCostFor}
+            onRepairComponent={(key) => {
+              if (garageStore.getState().payForRepair(wear[key])) runtime.repairComponent(key);
+            }}
+            onCompleteRebuild={() => garageStore.getState().payForRebuild(wrecked)}
+            onFlushOil={() => {
+              if (garageStore.getState().payForOilChange()) runtime.flushOil();
+            }}
           />
+
+          <CycleExplainer />
         </div>
       </div>
 
-      {/* FOOTER */}
-      <footer className="w-full border-t border-slate-900 bg-slate-950 py-6 text-center text-xs text-slate-500 font-mono mt-auto">
-        <span>Engine Physics Sandbox v4.1 &bull; 模块化拟真核心 + 玩法升级 &bull; Built with React & Tailwind</span>
+      <footer className="w-full border-t border-slate-900 bg-slate-950 py-5 text-center text-[11px] text-slate-500 font-mono mt-auto">
+        Engine Build Sandbox v5 · 纯 TS 仿真内核 + 真实测功台 + 生涯改装 · React &amp; Tailwind
       </footer>
     </main>
   );

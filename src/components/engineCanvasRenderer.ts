@@ -10,7 +10,8 @@
  * (refs, rAF scheduling, pointer input) and the drawing logic legible & ordered.
  */
 
-import { ComponentWear, EngineState, StrokeType } from '../types';
+import type { ComponentWear} from '../types';
+import { EngineState, StrokeType } from '../types';
 
 /** Fixed canvas geometry (drawing-space pixels). */
 export const CANVAS_GEOMETRY = {
