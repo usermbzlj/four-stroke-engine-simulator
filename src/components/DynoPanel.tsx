@@ -11,7 +11,7 @@
 
 import type { DynoCurvePoint, EngineSpec } from '../types';
 import type { DynoUiState } from '../runtime/engineRuntime';
-import { THERMAL } from '../engine';
+import { DYNO, THERMAL } from '../engine';
 import { Ban, Gauge, LineChart, Play, TriangleAlert } from 'lucide-react';
 
 interface DynoPanelProps {
@@ -28,14 +28,17 @@ type PlotPoint = { rpm: number; torque: number; power: number; knock?: number };
 
 function Curve({ points, spec, live }: { points: PlotPoint[]; spec: EngineSpec; live: boolean }) {
   const { width, height, pad } = CHART;
+  const minRpm = DYNO.startRpm;
   const maxRpm = spec.redlineRpm;
   const maxTorque = Math.max(...points.map((p) => p.torque), spec.peakTorque * 0.6);
   const maxPower = Math.max(...points.map((p) => p.power), 5);
 
   const project = (value: number, max: number, rpm: number) => ({
-    x: pad + (rpm / maxRpm) * (width - pad * 2),
+    x: pad + ((rpm - minRpm) / Math.max(1, maxRpm - minRpm)) * (width - pad * 2),
     y: height - pad - (value / max) * (height - pad * 2),
   });
+  const firstX = project(0, maxTorque, points[0]?.rpm ?? minRpm).x;
+  const lastX = project(0, maxTorque, points.at(-1)?.rpm ?? minRpm).x;
 
   const toPath = (accessor: (p: PlotPoint) => number, max: number) =>
     points
@@ -84,9 +87,7 @@ function Curve({ points, spec, live }: { points: PlotPoint[]; spec: EngineSpec; 
       {points.length > 1 && (
         <>
           <path
-            d={`M ${pad},${height - pad} L ${torquePath} L ${project(0, maxTorque, points.at(-1)?.rpm ?? 0).x},${
-              height - pad
-            } Z`}
+            d={`M ${firstX},${height - pad} L ${torquePath} L ${lastX},${height - pad} Z`}
             fill="url(#dynoTorqueFill)"
           />
           <polyline points={torquePath} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinejoin="round" />
@@ -102,7 +103,7 @@ function Curve({ points, spec, live }: { points: PlotPoint[]; spec: EngineSpec; 
 
       {/* axis labels */}
       <text x={pad} y={height - 8} fontSize="8" fill="#475569" fontFamily="monospace">
-        1.5k
+        {(minRpm / 1000).toFixed(1)}k
       </text>
       <text x={width - pad} y={height - 8} fontSize="8" fill="#7f1d1d" fontFamily="monospace" textAnchor="end">
         {(maxRpm / 1000).toFixed(1)}k 红线

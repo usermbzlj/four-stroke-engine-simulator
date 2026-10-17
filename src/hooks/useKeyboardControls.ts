@@ -38,11 +38,15 @@ export const KEY_BINDINGS: { keys: string; label: string }[] = [
   { keys: 'Esc', label: '中止当前拉力 / 放弃合约' },
 ];
 
+/** Inputs that take no text, so a focused one must not swallow the driving keys. */
+const NON_TEXT_INPUTS = new Set(['range', 'checkbox', 'radio', 'button', 'submit', 'reset']);
+
 /** True when the user is typing, so we must not steal their keystrokes. */
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
+  if (target instanceof HTMLInputElement) return !NON_TEXT_INPUTS.has(target.type);
   const tag = target.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+  return tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
 }
 
 const THROTTLE_KEYS = new Set(['Space', 'KeyW', 'ArrowUp']);

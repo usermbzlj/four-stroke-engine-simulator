@@ -20,6 +20,7 @@ import {
   effectiveOilLevel,
   estimateBrakeTorque,
   getChamberState,
+  knockSeverity,
   oilPressureBar,
   rotationalDragTorque,
   smoothThrottle,
@@ -194,6 +195,12 @@ export function stepEngine(input: StepInput): StepResult {
     s.engineState = to;
   };
 
+  // Only the first failure in a step is real: an engine that has just blown
+  // apart cannot also seize, and a second event would be handled twice downstream.
+  const fail = (state: EngineState, reason: string) => {
+    if (!events.some((e) => e.kind === 'failure')) events.push({ kind: 'failure', state, reason });
+  };
+
   // --- Airflow: pedal (with butterfly inertia) vs. idle-air bypass ---------
   s.actualThrottle = smoothThrottle(s.actualThrottle, params.throttle, dt);
   const idle = idleBypassOpening(s, spec, params.choke, dt, isDead);
@@ -295,7 +302,9 @@ export function stepEngine(input: StepInput): StepResult {
     }
   }
 
-  if (s.ignitionCut) triggeredIgnitedState = false;
+  // Broken rings leave nothing to compress, so there is nothing for a spark to light.
+  const compressionLost = s.wear.pistonRings <= 0;
+  if (s.ignitionCut || compressionLost) triggeredIgnitedState = false;
 
   // Worn spark plug random misfire, mitigated by a hotter ignition system.
   const plugMisfireChance = (1 - s.wear.sparkPlug / 100) / (1 + spec.sparkEnergy);
@@ -303,13 +312,36 @@ export function stepEngine(input: StepInput): StepResult {
     triggeredIgnitedState = false;
   }
 
-  if (isWithinSparkWindow && !s.sparkFired && !isDead) {
+  const limits = { rich: COMBUSTION.lambdaRich, lean: COMBUSTION.lambdaLean };
+  const combustionDriveAvailable =
+    selfSustained &&
+    !s.ignitionCut &&
+    !compressionLost &&
+    s.wear.sparkPlug > COMBUSTION.minSparkPlug &&
+    tuneSample.lambda >= limits.rich &&
+    tuneSample.lambda <= limits.lean;
+
+  // The spark fires late in the compression stroke, where the chamber model has
+  // not lit anything yet, so whether it lights the charge has to be judged from
+  // the operating point rather than from `chamber.ignited`.
+  if (isWithinSparkWindow && !s.sparkFired && !isDead && !s.ignitionCut) {
     s.sparkFired = true;
     events.push({ kind: 'spark' });
 
-    if (triggeredIgnitedState) {
+    const limiterAllowsSpark = !limiterCut || Math.sin(timestampMs * LIMITER.cutFrequency) > 0;
+    const plugFouled = rng() < plugMisfireChance;
+
+    if (combustionDriveAvailable && limiterAllowsSpark && !plugFouled) {
+      const sparkKnock = knockSeverity({
+        spec,
+        ignition: tuneSample.ignition,
+        lambda: tuneSample.lambda - params.choke * 0.18,
+        rpm: curRpm,
+        throttle: effectiveThrottle,
+        cylinderTemp: s.coolantTemp,
+      });
       const knockingPing =
-        chamber.knockSeverity > 0.2 ||
+        sparkKnock > 0.2 ||
         s.wear.conrodBearings < 30 ||
         (tuneSample.ignition > 25 && tuneSample.lambda > 1.25);
       events.push({ kind: 'combustion', rpm: curRpm, throttle: effectiveThrottle, knocking: knockingPing });
@@ -344,14 +376,6 @@ export function stepEngine(input: StepInput): StepResult {
   const limiterTorqueScale = onLimiter
     ? LIMITER.torqueScaleBase + LIMITER.torqueScaleSwing * Math.max(0, Math.sin(timestampMs * LIMITER.cutFrequency))
     : 1.0;
-
-  const limits = { rich: COMBUSTION.lambdaRich, lean: COMBUSTION.lambdaLean };
-  const combustionDriveAvailable =
-    selfSustained &&
-    !s.ignitionCut &&
-    s.wear.sparkPlug > COMBUSTION.minSparkPlug &&
-    tuneSample.lambda >= limits.rich &&
-    tuneSample.lambda <= limits.lean;
 
   const meanBrakeTorque = combustionDriveAvailable
     ? estimateBrakeTorque({
@@ -390,7 +414,8 @@ export function stepEngine(input: StepInput): StepResult {
   const newRpm = (angularVelocity * 60) / TWO_PI;
 
   // Self-sustained state transitions
-  if (curState === EngineState.STARTING && newRpm > RPM.catch && !isDead) {
+  // The starter alone can spin past the catch speed, so catching also needs a charge that burns.
+  if (curState === EngineState.STARTING && newRpm > RPM.catch && combustionDriveAvailable && !isDead) {
     transitionTo(EngineState.RUNNING, 'caught', {
       kind: 'log',
       level: 'success',
@@ -496,35 +521,28 @@ export function stepEngine(input: StepInput): StepResult {
     s.wear = nextWear;
 
     if (nextWear.pistonRings === 0 && prevWear.pistonRings > 0) {
-      events.push({ kind: 'log', level: 'critical', message: '活塞环熔断！气缸失去气密，发动机永久熄火。' });
-      transitionTo(EngineState.STALLED, 'pistonRingsFailed');
-      s.rpm = 0;
+      events.push({ kind: 'log', level: 'critical', message: '活塞环熔断！气缸失去气密，更换活塞环前无法再起动。' });
+      if (s.engineState === EngineState.RUNNING || s.engineState === EngineState.STARTING) {
+        transitionTo(EngineState.STALLED, 'pistonRingsFailed');
+      }
     }
     if (nextWear.conrodBearings === 0 && prevWear.conrodBearings > 0) {
-      events.push({ kind: 'failure', state: EngineState.EXPLODED, reason: '连杆轴瓦烧毁，连杆断裂击穿缸体！发动机彻底报废！' });
+      fail(EngineState.EXPLODED, '连杆轴瓦烧毁，连杆断裂击穿缸体！发动机彻底报废！');
     }
     if (nextWear.cylinderWall === 0 && prevWear.cylinderWall > 0) {
-      events.push({ kind: 'failure', state: EngineState.SEIZED, reason: '干摩擦与高温导致活塞与气缸熔结抱死。' });
+      fail(EngineState.SEIZED, '干摩擦与高温导致活塞与气缸熔结抱死。');
     }
   }
 
   // 7. CRITICAL STRESS THRESHOLDS
   if (newRpm > spec.destructRpm && !isDead) {
-    events.push({
-      kind: 'failure',
-      state: EngineState.EXPLODED,
-      reason: `转速超越机械极限 ${Math.round(spec.destructRpm)} RPM！连杆被拉断，机件碎裂爆炸！`,
-    });
+    fail(EngineState.EXPLODED, `转速超越机械极限 ${Math.round(spec.destructRpm)} RPM！连杆被拉断，机件碎裂爆炸！`);
   }
   if (s.coolantTemp > THERMAL.seizeTemp && !isDead) {
-    events.push({ kind: 'failure', state: EngineState.SEIZED, reason: '严重过热！金属烧熔卡死，曲轴抱死 (SEIZED)。' });
+    fail(EngineState.SEIZED, '严重过热！金属烧熔卡死，曲轴抱死 (SEIZED)。');
   }
   if (params.hasNitrous && s.coolantTemp > 120 && rng() < 0.06 && !isDead) {
-    events.push({
-      kind: 'failure',
-      state: EngineState.EXPLODED,
-      reason: '高温状态下强行喷射笑气，混合气剧烈回火引发缸体爆震解体！',
-    });
+    fail(EngineState.EXPLODED, '高温状态下强行喷射笑气，混合气剧烈回火引发缸体爆震解体！');
   }
 
   const failure = events.find((e): e is Extract<EngineEvent, { kind: 'failure' }> => e.kind === 'failure');

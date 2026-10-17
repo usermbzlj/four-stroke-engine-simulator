@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { it } from 'vitest';
 import type { EngineParameters, TuneMap } from '../types';
 import { EngineState } from '../types';
+import { RPM } from './constants';
 import { defaultBuild, resolveBuild } from './parts';
 import { autoTune, flatTune } from './tune';
 import type { EngineEvent, EngineSimState} from './simulation';
@@ -14,6 +15,7 @@ import { createEngineState, stepEngine } from './simulation';
 
 const stock = resolveBuild(defaultBuild());
 const stockTune = autoTune(stock);
+const RPM_CATCH_FLOOR = RPM.catch;
 
 const baseParams: EngineParameters = {
   throttle: 0,
@@ -186,6 +188,59 @@ it("dt is clamped so a huge frame gap cannot explode the integrator.", () => {
   });
   assert.ok(Number.isFinite(res.state.rpm), 'rpm stays finite after a clamped giant dt');
   assert.ok(Number.isFinite(res.state.coolantTemp), 'temp stays finite after a clamped giant dt');
+});
+
+/** Small seeded PRNG so a test can exercise the dice rolls deterministically. */
+function seededRng(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+it("Two fatal conditions in one step produce exactly one failure.", () => {
+  const state = createEngineState(146);
+  state.engineState = EngineState.RUNNING;
+  state.rpm = stock.destructRpm + 50;
+  const res = stepEngine({ state, params: baseParams, spec: stock, tune: stockTune, dt: 1 / 60, timestampMs: 16, rng: () => 0.99 });
+  const failures = res.events.filter((e) => e.kind === 'failure');
+  assert.equal(failures.length, 1, 'over-rev and overheat together must not be reported twice');
+  assert.equal(res.state.engineState, EngineState.EXPLODED, 'the first failure in the step decides the outcome');
+});
+
+it("Broken piston rings leave nothing to burn: the engine cranks but never catches.", () => {
+  const state = createEngineState(60, { ...createEngineState().wear, pistonRings: 0 });
+  state.engineState = EngineState.STARTING;
+  state.cranking = true;
+  const cranked = simulate(state, baseParams, 180, 1 / 60, () => 0.99);
+  assert.ok(cranked.state.rpm > RPM_CATCH_FLOOR, 'the starter still spins it past the catch speed');
+  assert.equal(cranked.state.engineState, EngineState.STARTING, 'but without compression it never catches');
+  assert.ok(!cranked.events.some((e) => e.kind === 'combustion'), 'and no spark lights a charge');
+});
+
+it("A healthy idle only reports misfires that really happened.", () => {
+  const state = createEngineState(85);
+  state.engineState = EngineState.RUNNING;
+  state.rpm = stock.idleRpm;
+  const { events } = simulate(state, baseParams, 30 * 120, 1 / 120, seededRng(7));
+  const sparks = events.filter((e) => e.kind === 'spark').length;
+  const burns = events.filter((e) => e.kind === 'combustion').length;
+  const misfireLogs = events.filter((e) => e.kind === 'log' && e.message.includes('缺火')).length;
+  assert.ok(sparks > 100, `the plug should be firing, got ${sparks} sparks`);
+  assert.ok(misfireLogs <= sparks - burns, `${misfireLogs} misfire logs for only ${sparks - burns} real misfires`);
+  assert.ok(burns >= sparks * 0.98, `a near-new plug should light almost every charge: ${burns}/${sparks}`);
+});
+
+it("The kill switch silences the plug.", () => {
+  const state = createEngineState(85);
+  state.engineState = EngineState.STALLED;
+  state.rpm = 2000;
+  state.ignitionCut = true;
+  const { events } = simulate(state, baseParams, 60, 1 / 120, () => 0.99);
+  assert.ok(!events.some((e) => e.kind === 'spark'), 'no sparks with the ignition cut');
 });
 
 it("A knocking tune wears the bottom end far faster than a clean one.", () => {

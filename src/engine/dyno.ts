@@ -55,6 +55,7 @@ export interface DynoSession {
   bins: Bin[];
   binLo: number;
   binHi: number;
+  startTemp: number;
   maxTemp: number;
   maxKnock: number;
   startWear: ComponentWear;
@@ -66,7 +67,7 @@ export interface DynoSession {
   aborted: string | null;
 }
 
-export function createDynoSession(spec: EngineSpec, wear: ComponentWear): DynoSession {
+export function createDynoSession(spec: EngineSpec, wear: ComponentWear, coolantTemp: number): DynoSession {
   return {
     phase: 'settle',
     phaseTime: 0,
@@ -78,6 +79,7 @@ export function createDynoSession(spec: EngineSpec, wear: ComponentWear): DynoSe
     bins: Array.from({ length: DYNO.bins }, () => ({ sum: 0, count: 0, knock: 0 })),
     binLo: DYNO.startRpm,
     binHi: spec.redlineRpm,
+    startTemp: coolantTemp,
     maxTemp: 0,
     maxKnock: 0,
     startWear: { ...wear },
@@ -289,6 +291,7 @@ export function finishDyno(session: DynoSession, spec: EngineSpec, endWear: Comp
     peakPowerRpm,
     peakTorqueNm,
     peakTorqueRpm,
+    startTemp: session.startTemp,
     maxTemp: session.maxTemp,
     maxKnock: session.maxKnock,
     wearCost,
@@ -318,7 +321,7 @@ export function runDynoHeadless(options: HeadlessPullOptions): DynoResult {
   state.rpm = DYNO.startRpm;
   state.actualThrottle = 1;
 
-  let session = createDynoSession(spec, wear);
+  let session = createDynoSession(spec, wear, startCoolantTemp);
   let command: DynoCommand = { throttle: 1, load: 0 };
   let timestamp = 0;
 

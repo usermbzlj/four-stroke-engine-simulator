@@ -11,6 +11,7 @@ import {
   CONTRACTS,
   INITIAL_GARAGE,
   beginContract,
+  contractStars,
   getContract,
   isDynoResolved,
   isLocked,
@@ -152,27 +153,61 @@ it("Thermal and dyno contracts are both resolved by the pull, never by the tick.
   assert.ok(starsFor(thermal, thermal.target + 10, false) === 0, 'overheating fails');
 });
 
-it("Endurance fails on any component wear, and only passes at the stretch length.", () => {
+it("Endurance fails on abnormal wear since the run began, and stalling before the target fails.", () => {
   const c = required('bed-in');
-  assert.equal(tickFor(c, { wear: worn }).finished?.passed, false, 'any wear fails an endurance run');
+  const started = { ...beginContract(c, spec, 0), startWear: healthy };
+  assert.equal(tickFor(c, { run: started, wear: worn }).finished?.passed, false, 'a 20-point bearing loss is abuse');
   assert.equal(
     tickFor(c, { engineState: EngineState.STALLED }).finished?.passed,
     false,
-    'stalling fails an endurance run'
+    'stalling before the target fails an endurance run'
   );
   const long = tickFor(c, { now: (c.stretch + 1) * 1000 });
   assert.equal(long.finished?.passed, true, 'surviving to the stretch length passes');
 });
 
-it("Redline sprint passes on reaching the target rpm, and only if it was quick enough.", () => {
+it("Endurance tolerates ordinary running wear and is judged against the wear it started with.", () => {
+  const c = required('endurance-3');
+  const secs = c.target;
+  // A healthy idle sheds about 0.02 points a second off the bearings.
+  const normal: ComponentWear = { ...INITIAL_WEAR, conrodBearings: 100 - secs * 0.02, pistonRings: 100 - secs * 0.018 };
+  const started = { ...beginContract(c, spec, 0), startWear: healthy };
+  const mid = tickFor(c, { run: started, wear: normal, now: (secs - 1) * 1000 });
+  assert.equal(mid.finished, undefined, `${secs}s of normal wear must not fail the run`);
+
+  // A pre-worn engine is not failed for wear it already had.
+  const preWorn = tickFor(c, { wear: worn, now: 1000 });
+  assert.equal(preWorn.finished, undefined, 'existing wear is the baseline, not a failure');
+  assert.deepEqual(preWorn.run.startWear, worn, 'the baseline is captured on the first tick');
+});
+
+it("Endurance that ends after the target still passes, with stars for how far it got.", () => {
+  const c = required('bed-in');
+  const late = tickFor(c, { engineState: EngineState.STALLED, now: (c.target + 5) * 1000 });
+  assert.equal(late.finished?.passed, true, 'stopping past the target is a pass');
+  assert.equal(starsFor(c, late.finished!.value, true), 1, 'but well short of the stretch is one star');
+});
+
+it("Redline sprint only times from a launch off idle, and only passes if it was quick enough.", () => {
   const c = required('sprint-1');
-  const quick = tickFor(c, { rpm: spec.redlineRpm, now: 5000 });
+
+  const atRedline = tickFor(c, { rpm: spec.redlineRpm });
+  assert.equal(atRedline.finished, undefined, 'accepting the contract at redline must not finish it instantly');
+  assert.equal(atRedline.run.armed, false, 'and must not arm it either');
+  assert.ok(atRedline.run.hint.includes('怠速'), 'the hint should send the player back to idle');
+
+  const idle = tickFor(c, { rpm: spec.idleRpm });
+  assert.equal(idle.run.armed, true, 'sitting at idle arms the sprint');
+  assert.equal(idle.accumulator, 0, 'but the clock has not started');
+
+  const armed = { ...beginContract(c, spec, 0), armed: true };
+  const quick = tickFor(c, { run: armed, rpm: spec.redlineRpm, accumulator: 5 });
   assert.equal(quick.finished?.passed, true, '5s is inside the 9s target');
 
-  const slow = tickFor(c, { rpm: spec.redlineRpm, now: 12000 });
+  const slow = tickFor(c, { run: armed, rpm: spec.redlineRpm, accumulator: 12 });
   assert.equal(slow.finished?.passed, false, '12s is outside the target');
 
-  const timeout = tickFor(c, { rpm: 2000, now: 31000 });
+  const timeout = tickFor(c, { run: armed, rpm: 2000, accumulator: 31 });
   assert.equal(timeout.finished?.passed, false, 'the sprint times out');
 });
 
@@ -214,4 +249,16 @@ it("Best score tracking respects direction.", () => {
   assert.equal(g2.best[sprint.id], 6.5, 'a faster sprint is a better sprint');
   const g3 = settleContract(g2, sprint, true, 8.5).garage;
   assert.equal(g3.best[sprint.id], 6.5, 'a slower run does not overwrite the record');
+});
+
+it("A failed run never records a best, and never shows as stars.", () => {
+  const pull = required('baseline-pull');
+  const failed = settleContract({ ...INITIAL_GARAGE }, pull, false, 8).garage;
+  assert.equal(failed.best[pull.id], undefined, 'a failure is not a record');
+  assert.equal(contractStars(failed, pull), 0, 'and earns no stars on the ladder');
+
+  // Older saves stored failed metrics as `best`; those must not read as passes either.
+  const legacy: GarageState = { ...INITIAL_GARAGE, best: { [pull.id]: 8, 'sprint-1': 30.5 } };
+  assert.equal(contractStars(legacy, pull), 0);
+  assert.equal(contractStars(legacy, required('sprint-1')), 0);
 });

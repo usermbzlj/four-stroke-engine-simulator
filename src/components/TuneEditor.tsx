@@ -33,6 +33,8 @@ interface TuneEditorProps {
   wear: ComponentWear;
   coolantTemp: number;
   presets: TunePreset[];
+  /** A dyno pull is in progress: its result must belong to a single map. */
+  locked: boolean;
   onChange: (next: TuneMap) => void;
   onAutoTune: () => void;
   onSavePreset: () => void;
@@ -55,6 +57,7 @@ export default function TuneEditor({
   wear,
   coolantTemp,
   presets,
+  locked,
   onChange,
   onAutoTune,
   onSavePreset,
@@ -135,6 +138,7 @@ export default function TuneEditor({
   };
 
   const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (locked) return;
     const point = toViewBox(event);
     if (!point) return;
     const index = nearestIndex(point.x);
@@ -144,7 +148,7 @@ export default function TuneEditor({
   };
 
   const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
-    if (draggingRef.current === null) return;
+    if (locked || draggingRef.current === null) return;
     const point = toViewBox(event);
     if (!point) return;
     applyAt(draggingRef.current, valueForY(point.y));
@@ -173,13 +177,21 @@ export default function TuneEditor({
           </span>
           <button
             onClick={onAutoTune}
-            className="text-[10px] font-mono px-2 py-1 rounded border border-indigo-800/60 bg-indigo-950/40 text-indigo-300 hover:bg-indigo-900/50 flex items-center gap-1 cursor-pointer"
+            disabled={locked}
+            className="text-[10px] font-mono px-2 py-1 rounded border border-indigo-800/60 bg-indigo-950/40 text-indigo-300 hover:bg-indigo-900/50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 cursor-pointer"
           >
             <Sparkles className="w-3 h-3" />
             安全基础标定
           </button>
         </div>
       </div>
+
+      {locked && (
+        <div className="flex items-center gap-2 bg-sky-950/40 border border-sky-900/50 rounded-xl p-2.5 text-[10px] font-mono text-sky-300">
+          <Cpu className="w-3.5 h-3.5 shrink-0" />
+          测功拉力进行中，标定已锁定 —— 一次拉力只对应一套曲线。拉完或中止后即可继续调整。
+        </div>
+      )}
 
       {/* Channel switch */}
       <div className="flex gap-2">
@@ -329,7 +341,8 @@ export default function TuneEditor({
                 <div className="flex items-center gap-1 mt-1">
                   <button
                     onClick={() => onChange(setZoneValue(tune, spec.ecuTier, zi, channel, current - step))}
-                    className="w-6 h-6 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs cursor-pointer"
+                    disabled={locked}
+                    className="w-6 h-6 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs cursor-pointer"
                   >
                     −
                   </button>
@@ -339,14 +352,16 @@ export default function TuneEditor({
                     max={range.max}
                     step={step}
                     value={current}
+                    disabled={locked}
                     onChange={(e) =>
                       onChange(setZoneValue(tune, spec.ecuTier, zi, channel, parseFloat(e.target.value)))
                     }
-                    className="flex-1 h-1 bg-slate-900 rounded appearance-none cursor-pointer accent-indigo-400"
+                    className="flex-1 h-1 bg-slate-900 rounded appearance-none cursor-pointer disabled:opacity-40 accent-indigo-400"
                   />
                   <button
                     onClick={() => onChange(setZoneValue(tune, spec.ecuTier, zi, channel, current + step))}
-                    className="w-6 h-6 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs cursor-pointer"
+                    disabled={locked}
+                    className="w-6 h-6 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs cursor-pointer"
                   >
                     +
                   </button>
@@ -407,7 +422,11 @@ export default function TuneEditor({
                 key={i}
                 className="group flex items-center gap-1 text-[10px] font-mono pl-2 pr-1 py-1 rounded bg-indigo-950/40 border border-indigo-900/40 text-indigo-300"
               >
-                <button onClick={() => onApplyPreset(i)} className="hover:text-white cursor-pointer">
+                <button
+                  onClick={() => onApplyPreset(i)}
+                  disabled={locked}
+                  className="hover:text-white disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                >
                   {p.name}
                 </button>
                 <button

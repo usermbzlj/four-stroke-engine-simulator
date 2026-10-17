@@ -318,13 +318,14 @@ export class EngineRuntime {
 
     // The starter is momentary, so it is read straight from intent.
     const wantStarter = intent.starter && !isDead(state.engineState) && !session;
-    if (wantStarter !== state.cranking) {
-      state.cranking = wantStarter;
-      if (wantStarter && (state.engineState === EngineState.OFF || state.engineState === EngineState.STALLED)) {
-        state.ignitionCut = false;
-        state.engineState = EngineState.STARTING;
-        this.patch({ engineState: EngineState.STARTING });
-      }
+    const justPressed = wantStarter && !state.cranking;
+    state.cranking = wantStarter;
+    const stopped = state.engineState === EngineState.OFF || state.engineState === EngineState.STALLED;
+    // Holding the key through a stall re-engages the starter, but must not undo a kill switch flipped meanwhile.
+    if (stopped && (justPressed || (wantStarter && !state.ignitionCut))) {
+      state.ignitionCut = false;
+      state.engineState = EngineState.STARTING;
+      this.patch({ engineState: EngineState.STARTING });
     }
 
     this.pedal = advancePedal(this.pedal, intent, dt);
@@ -438,12 +439,16 @@ export class EngineRuntime {
   /** Install a new build. Call {@link refit} as well when parts physically changed. */
   setBuild(build: EngineBuild): void {
     const spec = resolveBuild(build);
+    const redlineChanged = spec.redlineRpm !== this.spec.redlineRpm;
     this.spec = spec;
     this.breakpoints = tuneBreakpoints(spec);
-    // Never let a stale limiter sit above a downgraded engine.
-    if (this.controls.limiterRpm > spec.destructRpm) {
+    // The limiter follows the redline: a stale value either chokes a higher-revving
+    // build on the dyno or lets a lower-revving one over-rev into bearing damage.
+    const staleLimiter = redlineChanged || this.controls.limiterRpm > spec.destructRpm;
+    if (staleLimiter && this.controls.limiterRpm !== spec.redlineRpm) {
       this.controls = { ...this.controls, limiterRpm: spec.redlineRpm };
       this.patch({ controls: this.controls });
+      this.log('info', `红线变为 ${spec.redlineRpm} RPM，断火限速器已同步调整。`);
     }
     this.patch({ spec });
     this.flush();
@@ -454,15 +459,18 @@ export class EngineRuntime {
   }
 
   setControls(patch: Partial<EngineControls>): void {
-    this.controls = { ...this.controls, ...patch };
+    const next = { ...this.controls, ...patch };
+    // Topping up is a paid oil change (`flushOil`); the control can only drain.
+    next.oilLevel = Math.min(next.oilLevel, this.controls.oilLevel);
+    this.controls = next;
     this.patch({ controls: this.controls });
     this.flush();
   }
 
   resetControls(): void {
-    this.controls = { ...INITIAL_CONTROLS, limiterRpm: this.spec.redlineRpm };
+    this.controls = { ...INITIAL_CONTROLS, limiterRpm: this.spec.redlineRpm, oilLevel: this.controls.oilLevel };
     this.patch({ controls: this.controls });
-    this.log('info', '辅助控制（负载 / 机油 / 冷却 / 限速）已恢复默认。');
+    this.log('info', '辅助控制（负载 / 冷却 / 限速）已恢复默认。');
     this.flush();
   }
 
@@ -491,9 +499,13 @@ export class EngineRuntime {
   manualSpark(): void {
     const { state } = this;
     if (isDead(state.engineState)) return;
+    if (state.ignitionCut) {
+      this.log('warning', '点火系统已切断，无法跳火。先按 K 恢复点火。');
+      return;
+    }
     this.audio.spark();
 
-    if (state.rpm > 100 && this.pedal > 0.05) {
+    if (state.rpm > 100 && this.pedal > 0.05 && state.wear.pistonRings > 0) {
       const sample = sampleTune(this.tune, this.breakpoints, state.rpm);
       const knocking = state.wear.conrodBearings < 30 || sample.ignition > 30;
       this.audio.combustion(state.rpm, this.pedal, knocking);
@@ -526,7 +538,7 @@ export class EngineRuntime {
       this.log('info', '拉力测试已在进行中。');
       return;
     }
-    const { engineState, wear } = this.state;
+    const { engineState, wear, coolantTemp } = this.state;
     if (isDead(engineState)) {
       this.log('error', '发动机已损毁，无法上测功台。请先大修。');
       return;
@@ -535,7 +547,7 @@ export class EngineRuntime {
       this.log('error', '测功台需要发动机处于运转状态。请先按住 S 起动。');
       return;
     }
-    this.dynoSession = createDynoSession(this.spec, wear);
+    this.dynoSession = createDynoSession(this.spec, wear, coolantTemp);
     this.dynoCommand = { throttle: 1, load: 0 };
     this.patch({ dyno: { running: true, progress: 0, live: [], result: null } });
     this.log('info', `测功台接合：全油门加载扫描至 ${this.spec.redlineRpm} rpm，全程会计入部件损耗。`);

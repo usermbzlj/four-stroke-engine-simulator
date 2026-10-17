@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useEffectEvent, useRef, useState, type MouseEvent, type Touch, type TouchEvent } from 'react';
+import { useEffect, useEffectEvent, useRef, useState, type MouseEvent, type TouchEvent } from 'react';
 import { EngineState, StrokeType, type ComponentWear } from '../types';
 import { advanceReadableCrankAngle, getReadableVisualRpm, strokeFromCrankAngle } from '../utils/engineVisuals';
 import { spawnExplosion, spawnSeizureSparks, spawnStrokeParticles, type Particle } from './engineCanvasParticles';
@@ -201,35 +201,39 @@ export default function EngineCanvas({
   // ---- Pointer / touch input: drag the crank, tap the plug to spark ----
   const isDead = state === EngineState.EXPLODED || state === EngineState.SEIZED;
 
+  /** Client coordinates -> canvas drawing coordinates (the canvas is drawn larger than it is displayed). */
+  const getCanvasCoords = (point: { clientX: number; clientY: number } | undefined) => {
+    if (!point) return null;
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (point.clientX - rect.left) * (W_WIDTH / rect.width),
+      y: (point.clientY - rect.top) * (W_HEIGHT / rect.height),
+    };
+  };
+
   const handleMouseDown = (e: MouseEvent<HTMLCanvasElement>) => {
     if (isDead) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const coords = getCanvasCoords(e);
+    if (!coords) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const distToCrankCenter = Math.sqrt((x - CX) ** 2 + (y - CRANK_Y) ** 2);
+    const distToCrankCenter = Math.sqrt((coords.x - CX) ** 2 + (coords.y - CRANK_Y) ** 2);
     if (distToCrankCenter < R_RADIUS + 40) {
       setIsDragging(true);
     }
-    if (x >= CX - 15 && x <= CX + 15 && y <= 110 && y >= 65) {
+    if (coords.x >= CX - 15 && coords.x <= CX + 15 && coords.y <= 110 && coords.y >= 65) {
       onManualSpark?.();
     }
   };
 
   const handleMouseMove = (e: MouseEvent<HTMLCanvasElement>) => {
     if (!isDragging || !onCrankDrag) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const coords = getCanvasCoords(e);
+    if (!coords) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const dx = x - CX;
-    const dy = CRANK_Y - y; // Inverse Y
+    const dx = coords.x - CX;
+    const dy = CRANK_Y - coords.y; // Inverse Y
     // atan2 gives the angle from the X axis; offset so theta = 0 points UP.
     let angle = Math.atan2(dx, dy);
     if (angle < 0) angle += 2 * Math.PI;
@@ -237,17 +241,6 @@ export default function EngineCanvas({
   };
 
   const handleMouseUpOrLeave = () => setIsDragging(false);
-
-  const getCanvasCoords = (touch: Touch | undefined) => {
-    if (!touch) return null;
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: (touch.clientX - rect.left) * (W_WIDTH / rect.width),
-      y: (touch.clientY - rect.top) * (W_HEIGHT / rect.height),
-    };
-  };
 
   const handleTouchStart = (e: TouchEvent<HTMLCanvasElement>) => {
     if (isDead) return;

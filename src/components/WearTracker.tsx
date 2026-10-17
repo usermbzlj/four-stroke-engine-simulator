@@ -28,7 +28,7 @@ interface WearTrackerProps {
 }
 
 const COMPONENT_SCHEMA: { key: keyof ComponentWear; desc: string }[] = [
-  { key: 'pistonRings', desc: '密封燃烧室。爆震与过热是它的头号杀手，归零即永久熄火。' },
+  { key: 'pistonRings', desc: '密封燃烧室。爆震与过热是它的头号杀手，归零即失去压缩，修好前无法再起动。' },
   { key: 'cylinderWall', desc: '摩擦主表面。缺油或极端高温会拉缸，归零即抱死。' },
   { key: 'conrodBearings', desc: '承受全部爆发力。爆震与超转会迅速吃掉它，归零即炸缸。' },
   { key: 'crankshaftJournal', desc: '主承力轴颈。油压不足时磨损飙升，是阻力增大的首因。' },

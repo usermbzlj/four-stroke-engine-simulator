@@ -190,6 +190,7 @@ export default function App() {
               wear={wear}
               coolantTemp={liveStats.temp}
               presets={presets}
+              locked={dyno.running}
               onChange={handleTuneChange}
               onAutoTune={applyAutoTune}
               onSavePreset={savePreset}

@@ -259,6 +259,8 @@ export interface DynoResult {
   peakPowerRpm: number;
   peakTorqueNm: number;
   peakTorqueRpm: number;
+  /** Coolant temperature when the pull began (°C). */
+  startTemp: number;
   /** Highest coolant temperature seen during the pull (°C). */
   maxTemp: number;
   /** Highest knock severity seen during the pull (0-1). */
@@ -310,6 +312,10 @@ export interface ContractRun {
   message: string;
   /** Live hint about what is currently blocking a pass. */
   hint: string;
+  /** Endurance: component health on the first tick, the baseline wear is measured from. */
+  startWear?: ComponentWear;
+  /** Redline sprint: the engine has been seen at idle, so the next launch is timed. */
+  armed?: boolean;
 }
 
 export interface GarageState {

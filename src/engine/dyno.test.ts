@@ -118,6 +118,13 @@ it("The rev limiter caps the pull where you set it.", () => {
   );
 });
 
+it("The pull records the coolant temperature it started from.", () => {
+  assert.equal(baseline.startTemp, 85, 'the headless default starts warm');
+  const cold = runDynoHeadless({ spec: stock, tune: autoTune(stock), params, startCoolantTemp: 30, rng: steadyRng });
+  assert.equal(cold.startTemp, 30);
+  assert.ok(cold.maxTemp < baseline.maxTemp, 'a cold start finishes the pull cooler than a warm one');
+});
+
 it("The analytic preview is a usable optimistic estimate, not a replacement.", () => {
   const preview = previewCurve(stock, autoTune(stock), INITIAL_WEAR);
   assert.equal(preview.length, 41);

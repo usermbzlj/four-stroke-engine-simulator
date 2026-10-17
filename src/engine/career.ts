@@ -12,7 +12,7 @@
 
 import type { Contract, ContractRun, ComponentWear, EngineSpec, GarageState } from '../types';
 import { EngineState } from '../types';
-import { ECONOMY } from './constants';
+import { ECONOMY, THERMAL, WEAR } from './constants';
 import { starterOwned } from './parts';
 
 export const CONTRACTS: Contract[] = [
@@ -73,7 +73,7 @@ export const CONTRACTS: Contract[] = [
     tier: 1,
     name: '散热考核',
     brief: '客户抱怨高负载会开锅。上测功台，证明它压得住。',
-    how: '完整跑完一次拉力，全程最高水温不超过 100°C。把冷却泵开大，必要时加装散热器。',
+    how: `暖机到 ${THERMAL.thermostatTemp}°C 以上再上台，完整跑完一次拉力，全程最高水温不超过 100°C。把冷却泵开大，必要时加装散热器。`,
     target: 100,
     stretch: 92,
     reward: 300,
@@ -111,7 +111,7 @@ export const CONTRACTS: Contract[] = [
     tier: 2,
     name: '耐久 150 秒',
     brief: '跑得快没用，得跑得久。',
-    how: '保持运转 150 秒且零部件损耗。',
+    how: '保持运转 150 秒，零部件不得出现异常损耗。',
     target: 150,
     stretch: 240,
     reward: 480,
@@ -176,7 +176,7 @@ export const CONTRACTS: Contract[] = [
     tier: 4,
     name: '五分钟耐久',
     brief: '大马力容易，大马力还不坏很难。',
-    how: '保持运转 300 秒且零部件损耗。',
+    how: '保持运转 300 秒，零部件不得出现异常损耗。',
     target: 300,
     stretch: 420,
     reward: 1150,
@@ -250,11 +250,21 @@ export function starsFor(contract: Contract, value: number, passed: boolean): nu
   return value >= target + (stretch - target) * 0.5 ? 2 : 1;
 }
 
-/** Best star rating recorded for a contract, accounting for its best metric. */
+/** Whether a metric value clears a contract's pass mark, in whichever direction counts. */
+export function meetsTarget(contract: Contract, value: number): boolean {
+  return lowerIsBetter(contract.kind) ? value <= contract.target : value >= contract.target;
+}
+
+/**
+ * Best star rating recorded for a contract, accounting for its best metric.
+ * Older saves also stored the metric of failed runs, so a best that never
+ * cleared the pass mark earns nothing.
+ */
 export function contractStars(garage: GarageState, contract: Contract): number {
   const recorded = garage.stars[contract.id] ?? 0;
   const best = garage.best[contract.id];
-  return best === undefined ? recorded : Math.max(recorded, starsFor(contract, best, true));
+  if (best === undefined) return recorded;
+  return Math.max(recorded, starsFor(contract, best, meetsTarget(contract, best)));
 }
 
 /** Credits paid out, discounted heavily for a result you have already beaten. */
@@ -271,13 +281,27 @@ export function scoreFor(contract: Contract, stars: number): number {
 
 const dead = (st: EngineState): boolean => st === EngineState.EXPLODED || st === EngineState.SEIZED;
 
-const anyComponentWorn = (w: ComponentWear): boolean =>
-  w.pistonRings < 99 ||
-  w.cylinderWall < 99 ||
-  w.conrodBearings < 99 ||
-  w.crankshaftJournal < 99 ||
-  w.sparkPlug < 99 ||
-  w.valves < 99;
+/** An endurance run tolerates this multiple of each component's base wear rate. */
+const ENDURANCE_WEAR_MARGIN = 3;
+/** Health points of slack on top, so a brief blip is not an instant fail. */
+const ENDURANCE_WEAR_GRACE = 0.5;
+/** Redline sprint: how far above idle the engine may sit and still count as "at idle". */
+const SPRINT_IDLE_BAND = 400;
+/** Redline sprint: a launch that has not reached the target by now has failed. */
+const SPRINT_TIMEOUT_SECONDS = 30;
+
+/**
+ * Whether any component has lost more health since `start` than ordinary
+ * running would cost. Healthy running still wears the bearings by roughly a
+ * point a minute, so endurance has to judge abuse, not the mere presence of wear.
+ */
+function abnormalWear(start: ComponentWear, now: ComponentWear, elapsed: number): boolean {
+  const keys = Object.keys(start) as (keyof ComponentWear)[];
+  return keys.some((key) => {
+    const allowance = ENDURANCE_WEAR_GRACE + elapsed * WEAR[key] * ENDURANCE_WEAR_MARGIN;
+    return start[key] - now[key] > allowance;
+  });
+}
 
 /** Start a contract run against the current build. */
 export function beginContract(contract: Contract, spec: EngineSpec, now: number): ContractRun {
@@ -293,10 +317,10 @@ export function beginContract(contract: Contract, spec: EngineSpec, now: number)
   const messages: Record<Contract['kind'], string> = {
     idle: `把转速压在 ${Math.round(spec.idleRpm - 150)}–${Math.round(spec.idleRpm + 150)} RPM`,
     dyno: '去「测功机」页跑一次完整拉力',
-    redline: `全油门冲到 ${Math.round(spec.redlineRpm - 200)} RPM`,
-    endurance: '保持运转，别让任何部件掉血',
+    redline: `回到怠速后全油门冲到 ${Math.round(spec.redlineRpm - 200)} RPM，离开怠速才开始计时`,
+    endurance: '保持运转，别让任何部件异常掉血',
     powerband: `把转速稳在 ${Math.round(spec.torquePeakRpm - 300)}–${Math.round(spec.torquePeakRpm + 300)} RPM`,
-    thermal: `去「测功机」跑一次完整拉力，全程水温压在 ${contract.target}°C 以内`,
+    thermal: `暖机到 ${THERMAL.thermostatTemp}°C 以上，去「测功机」跑一次完整拉力，全程水温压在 ${contract.target}°C 以内`,
   };
 
   return {
@@ -374,19 +398,41 @@ export function tickContract(input: ContractTickInput): ContractTickResult {
     }
 
     case 'redline': {
+      // The clock is the accumulator, and it only starts once the engine has been
+      // seen at idle and then leaves it — otherwise a run accepted at redline would
+      // finish in zero seconds.
       const targetRpm = spec.redlineRpm - 200;
-      const hint = `还差 ${Math.max(0, Math.round(targetRpm - rpm))} RPM`;
-      const next = withProgress(elapsed, hint);
-      if (rpm >= targetRpm) return { run: next, accumulator: 0, finished: { passed: elapsed <= contract.target, value: elapsed } };
-      if (isDead || elapsed > 30) return { run: next, accumulator: 0, finished: { passed: false, value: elapsed } };
+      const idleCeiling = spec.idleRpm + SPRINT_IDLE_BAND;
+      const atIdle = engineState === EngineState.RUNNING && rpm <= idleCeiling;
+      const armed = run.armed === true || atIdle;
+      const sprinting = armed && (accumulator > 0 || rpm > idleCeiling);
+      if (sprinting) accumulator += dt;
+
+      const hint = !armed
+        ? `先回到怠速（≤ ${Math.round(idleCeiling)} RPM）再起跑`
+        : !sprinting
+        ? '就绪：一脚油门到底，离开怠速即开始计时'
+        : `还差 ${Math.max(0, Math.round(targetRpm - rpm))} RPM`;
+      const next: ContractRun = { ...withProgress(accumulator, hint), armed };
+
+      if (sprinting && rpm >= targetRpm) {
+        return { run: next, accumulator: 0, finished: { passed: accumulator <= contract.target, value: accumulator } };
+      }
+      if (isDead || accumulator > SPRINT_TIMEOUT_SECONDS) {
+        return { run: next, accumulator: 0, finished: { passed: false, value: accumulator } };
+      }
       return { run: next, accumulator };
     }
 
     case 'endurance': {
-      const worn = anyComponentWorn(wear);
-      const hint = worn ? '部件已出现损耗' : stopped ? '发动机已停转' : '✅ 一切正常';
-      const next = withProgress(Math.min(contract.stretch, elapsed), hint);
-      if (worn || isDead || stopped) return { run: next, accumulator: 0, finished: { passed: false, value: elapsed } };
+      const startWear = run.startWear ?? wear;
+      const worn = abnormalWear(startWear, wear, elapsed);
+      const hint = worn ? '部件出现异常损耗' : stopped ? '发动机已停转' : '✅ 一切正常';
+      const next: ContractRun = { ...withProgress(Math.min(contract.stretch, elapsed), hint), startWear };
+      // Ending early still passes once the target is behind you; the stretch is for stars.
+      if (worn || isDead || stopped) {
+        return { run: next, accumulator: 0, finished: { passed: elapsed >= contract.target, value: elapsed } };
+      }
       if (elapsed >= contract.stretch) return { run: next, accumulator: 0, finished: { passed: true, value: elapsed } };
       return { run: next, accumulator };
     }
@@ -412,10 +458,11 @@ export function settleContract(
   const reward = rewardFor(contract, stars, previousStars);
   const score = stars > previousStars ? scoreFor(contract, stars) : 0;
 
-  const previousBest = garage.best[contract.id] ?? 0;
-  const better = lowerIsBetter(contract.kind)
-    ? previousBest === 0 || value < previousBest
-    : value > previousBest;
+  // Only a passing run sets a record; a failed one must not read as a score later.
+  const previousBest = garage.best[contract.id];
+  const better =
+    passed &&
+    (previousBest === undefined || (lowerIsBetter(contract.kind) ? value < previousBest : value > previousBest));
 
   const promoted = passed && contract.tier >= garage.tier;
   const gifts = passed && previousStars === 0 ? contract.unlocks : [];
@@ -427,7 +474,7 @@ export function settleContract(
       score: garage.score + score,
       tier: promoted ? contract.tier + 1 : garage.tier,
       stars: { ...garage.stars, [contract.id]: Math.max(previousStars, stars) },
-      best: { ...garage.best, [contract.id]: better ? value : previousBest },
+      best: better ? { ...garage.best, [contract.id]: value } : garage.best,
       owned: gifts.length ? Array.from(new Set([...garage.owned, ...gifts])) : garage.owned,
     },
     stars,

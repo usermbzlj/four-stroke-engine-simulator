@@ -347,6 +347,7 @@ export default function ControlDeck({
           display={`${controls.oilLevel}%${controls.oilLevel < 35 ? ' ☠ 拉缸风险' : ''}`}
           accent={controls.oilLevel < 35 ? 'text-red-400 font-bold animate-pulse' : 'text-amber-400 font-bold'}
           disabled={locked}
+          hint="只能放油做实验；加满需要在部件诊断面板付费换机油。"
           onChange={(v) => onUpdateControls({ oilLevel: Math.round(v) })}
         />
 

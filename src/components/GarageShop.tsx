@@ -14,6 +14,7 @@ import { useMemo, useState } from 'react';
 import type { EngineBuild, EngineSpec, GarageState, Part, PartSlot } from '../types';
 import {
   ENGINE_BLOCKS,
+  KNOCK,
   PART_SLOTS,
   SLOT_LABELS,
   THERMAL,
@@ -75,9 +76,13 @@ function describeDelta(current: EngineSpec, next: EngineSpec): { text: string; g
 
   // Knock margin is the currency the whole tuning game is played in, so show it
   // in the unit the player edits: degrees of ignition advance.
-  const knockDelta = (next.knockResistance - current.knockResistance) * 20;
-  const crKnockDelta = -(next.compressionRatio - current.compressionRatio) * 1.8;
-  const boostKnockDelta = -(next.boostBar - current.boostBar) * 22;
+  // Same terms as `knockLimitAdvance`, including that compression below the
+  // reference buys nothing back.
+  const knockDelta = (next.knockResistance - current.knockResistance) * KNOCK.resistanceBonusDeg;
+  const crKnockDelta =
+    Math.max(0, current.compressionRatio - KNOCK.referenceCr) * KNOCK.crPenaltyPerPoint -
+    Math.max(0, next.compressionRatio - KNOCK.referenceCr) * KNOCK.crPenaltyPerPoint;
+  const boostKnockDelta = -(next.boostBar - current.boostBar) * KNOCK.boostPenaltyPerBar;
   const totalKnock = knockDelta + crKnockDelta + boostKnockDelta;
   if (Math.abs(totalKnock) > 0.3) {
     out.push({ text: `爆震余量 ${totalKnock > 0 ? '+' : ''}${totalKnock.toFixed(1)}°`, good: totalKnock > 0 });
@@ -145,8 +150,8 @@ export default function GarageShop({ garage, build, spec, onBuyPart, onBuyBlock 
       out.push({
         level: 'danger',
         text: `增压 ${spec.boostBar.toFixed(2)} bar 配 CR ${spec.compressionRatio} 会吃掉约 ${(
-          spec.boostBar * 22 +
-          (spec.compressionRatio - 9.5) * 1.8
+          spec.boostBar * KNOCK.boostPenaltyPerBar +
+          (spec.compressionRatio - KNOCK.referenceCr) * KNOCK.crPenaltyPerPoint
         ).toFixed(0)}° 爆震余量。换低压缩增压活塞。`,
       });
     }

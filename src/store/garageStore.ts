@@ -16,6 +16,7 @@ import {
   BLAST_DAMAGE_SLOTS,
   ECONOMY,
   IDLE_RUN,
+  THERMAL,
   autoTune,
   beginContract,
   defaultProgress,
@@ -371,6 +372,15 @@ export function createGarageStore(initial: PersistedProgress, deps: GarageDeps):
           }
           finishContract(c, result.peakPowerHp >= c.target && cleanEnough, result.peakPowerHp);
         } else if (c?.kind === 'thermal') {
+          // A cold engine never reaches operating temperature in one pull, so it
+          // would pass without proving anything about the cooling. Keep the run open.
+          if (result.startTemp < THERMAL.thermostatTemp) {
+            deps.log(
+              'warning',
+              `散热考核需要热车上台：本次起拉水温 ${result.startTemp.toFixed(0)}°C，低于 ${THERMAL.thermostatTemp}°C，不计成绩。暖机后再拉一次。`
+            );
+            return;
+          }
           // A pull that overheated into an abort obviously does not pass.
           finishContract(c, !result.aborted && result.maxTemp <= c.target, result.maxTemp);
         }
