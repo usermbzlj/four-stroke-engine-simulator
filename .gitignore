@@ -3,6 +3,8 @@ node_modules/
 
 # Build output
 dist/
+# Rendered audio from scripts/render.mts
+out/
 *.local
 
 # Vite cache

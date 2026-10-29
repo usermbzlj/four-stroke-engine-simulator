@@ -1,31 +1,46 @@
-# 四冲程单缸发动机模拟器
+# 单缸试验台
 
-浏览器内的单缸四冲程发动机物理沙盒：ECU 调校、改装零件、测功台、生涯合约、Canvas 剖面动画与 Web Audio 实时发声。
+浏览器里的单缸四冲程发动机试验台。气缸压力、进排气管里的气柱、排气声都由同一个按曲轴转角求解的物理内核算出来：改缸径、凸轮、排气管长度或点火角，扭矩曲线和声音一起变；改过头，连杆会断，气门会撞活塞，活塞顶会被爆震打穿。
+
+## 怎么玩
+
+| 操作 | 键 |
+| --- | --- |
+| 起动机 | 按住 `S`（或屏幕上的“按住起动”） |
+| 全油门 | 按住 `空格`，手柄右扳机 |
+| 手油门 | `↑` `↓`，数字键 `0`–`9`，在发动机画面上滚轮 |
+| 点火开关 | `K` |
+| 测功机定速 / 脱开 | `B`，`[` `]` 每次调 250 rpm |
+| 换新零件 | `R`（发动机坏了以后） |
+
+右上角三个面板：
+
+- **改装单**：几何、配气、进排气、曲轴连杆、燃油冷却。顶部会算出排量、重叠角、气门飘浮转速、连杆拉断转速。只能在熄火时改。
+- **ECU**：点火角修正、λ、断火转速和方式、怠速、松油门断油、爆震控制，台架水温机。随时可改。
+- **测功**：自动扫转速，保存曲线叠加对比。
 
 ## 开发
 
 ```bash
 npm install
 npm run dev        # http://localhost:3000
-npm run build      # tsc + vite build
-npm test           # vitest
-npm run lint
-npm run playtest   # 用真实 runtime 跑 9 个平衡/手感场景
-npm run balance    # 平衡性报告
+npm run check      # 类型检查 + lint + 测试
+npm run build
+npm run bench      # 无界面跑各预设：起动、怠速、空轰、全油门扭矩表、点火角扫描
+npm run render     # 把一段起动到收油的过程渲染成 out/*.wav，并打印各段电平
 ```
 
 ## 架构
 
 ```
 src/
-  engine/    纯 TS 物理与规则（无 React、无 DOM）：physics / simulation / tune / parts / dyno / career / persistence
-  runtime/   EngineRuntime：固定 1/120 s 步长 + 累加器，不可变快照，类型化事件；输入意图与遥测
-  store/     zustand：garage（存档/金钱/零件/合约）、log、settings、tutorial
-  game.ts    组合根：装配 runtime、store、音频，startGame()
-  hooks/     useRuntime（useSyncExternalStore）、useGarage、键盘控制
-  components/ 纯展示/交互组件
-  utils/     Web Audio 合成
-scripts/     playtest / balance-report
+  sim/      物理内核（纯 TS）：config 参数与派生量，core 曲轴转角求解器，snapshot 给界面的快照
+  audio/    synth 声音合成，dsp 基础滤波器，runner 内核+合成器+消息协议，
+            engine.worklet 在音频线程里按采样率运行，host 主线程宿主（无音频时退回主线程静音运行）
+  state/    zustand：benchStore（持久化的发动机/ECU/台架/测功曲线），liveStore（快照、示功图、事件），
+            controlStore（操作输入），engineLink（连接宿主、测功记录、自动扫转速）
+  ui/       剖面图、转速表、读数、示波器、抽屉面板、失效报告
+scripts/    bench、render
 ```
 
-要点：模拟与渲染解耦；测功台与实时游玩共用同一固定步长；存档防抖写入 localStorage。
+内核以单区缸内模型为核心：质量和能量守恒、可压缩孔口流动的气门和节气门、带惯性的进气道和排气头段气柱、Wiebe 燃烧、Livengood-Wu 爆震积分、Woschni 传热、Chen-Flynn 摩擦、飞轮动力学。它在 AudioWorklet 里每个音频采样推进一次（必要时细分到每步不超过 0.6° 曲轴转角）。排气门的瞬时质量流量驱动排气管波导，最后得到你听到的声音。
