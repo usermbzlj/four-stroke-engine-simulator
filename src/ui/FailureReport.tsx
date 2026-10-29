@@ -1,3 +1,6 @@
+import { failureCause, failureFixes } from '../mentor/brain';
+import { applyFix } from '../mentor/actions';
+import { useMentor } from '../mentor/store';
 import type { Failure } from '../sim/core';
 import { restoreEngine } from '../state/engineLink';
 
@@ -16,6 +19,8 @@ function crankText(deg: number): string {
 }
 
 export function FailureReport({ failure }: { failure: Failure }): React.ReactElement {
+  const fixes = failureFixes(failure);
+  const tail = useMentor((s) => s.messages.find((m) => m.key === 'failure-tail')?.text);
   return (
     <div className="failure" role="alertdialog" aria-labelledby="failure-title" aria-describedby="failure-detail">
       <div className="failure-card">
@@ -34,9 +39,38 @@ export function FailureReport({ failure }: { failure: Failure }): React.ReactEle
         <p id="failure-detail" className="failure-detail">
           {failure.detail}
         </p>
-        <button type="button" className="btn btn--primary" onClick={restoreEngine} autoFocus>
-          换新零件 <kbd>R</kbd>
-        </button>
+        <div className="failure-mentor">
+          <p>
+            <b>老周：</b>
+            {failureCause(failure)}
+          </p>
+          {fixes.length > 0 && (
+            <ul>
+              {fixes.map((f) => (
+                <li key={f.label}>{f.label}</li>
+              ))}
+            </ul>
+          )}
+          {tail && <p className="failure-tail">{tail}</p>}
+        </div>
+        <div className="failure-actions">
+          {fixes.length > 0 && (
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => {
+                for (const f of fixes) applyFix(f);
+                restoreEngine();
+              }}
+              autoFocus
+            >
+              按老周说的改，换新零件
+            </button>
+          )}
+          <button type="button" className={`btn${fixes.length > 0 ? '' : ' btn--primary'}`} onClick={restoreEngine}>
+            原样换新零件 <kbd>R</kbd>
+          </button>
+        </div>
       </div>
     </div>
   );

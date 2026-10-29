@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import { startMentor } from './mentor/brain';
 import { PRESETS, displacementCc } from './sim/config';
 import { useBench } from './state/benchStore';
 import { useLink } from './state/engineLink';
 import { useLive } from './state/liveStore';
+import { useUi, type Drawer } from './state/uiStore';
 import { BuildSheet } from './ui/BuildSheet';
 import { ControlStrip } from './ui/ControlStrip';
 import { DynoPanel } from './ui/DynoPanel';
@@ -10,15 +12,15 @@ import { EcuPanel } from './ui/EcuPanel';
 import { EngineView } from './ui/EngineView';
 import { EventFeed } from './ui/EventFeed';
 import { FailureReport } from './ui/FailureReport';
+import { LiveStrip } from './ui/LiveStrip';
+import { MentorPanel } from './ui/MentorPanel';
 import { Readouts } from './ui/Readouts';
 import { Scope } from './ui/Scope';
 import { StartScreen } from './ui/StartScreen';
 import { Tach } from './ui/Tach';
 import { nudgeThrottle, useBenchInput } from './ui/useBenchInput';
 
-type Drawer = 'build' | 'ecu' | 'dyno' | null;
-
-const DRAWERS: { id: Exclude<Drawer, null>; label: string }[] = [
+const DRAWERS: { id: Drawer; label: string }[] = [
   { id: 'build', label: '改装单' },
   { id: 'ecu', label: 'ECU' },
   { id: 'dyno', label: '测功' },
@@ -32,11 +34,16 @@ export default function App(): React.ReactElement {
   const volume = useBench((s) => s.volume);
   const setVolume = useBench((s) => s.setVolume);
   const failure = useLive((s) => s.snapshot?.failure ?? null);
-  const [drawer, setDrawer] = useState<Drawer>(null);
+  const drawer = useUi((s) => s.drawer);
+  const setDrawer = useUi((s) => s.setDrawer);
   const [shake, setShake] = useState(false);
   const lastFailure = useRef<unknown>(null);
 
   useBenchInput(started);
+
+  useEffect(() => {
+    if (started) startMentor();
+  }, [started]);
 
   useEffect(() => {
     if (failure && failure !== lastFailure.current) {
@@ -93,10 +100,14 @@ export default function App(): React.ReactElement {
       <main className="stage">
         <div
           className="stage-engine"
-          onWheel={(e) => nudgeThrottle(e.deltaY < 0 ? 0.03 : -0.03)}
+          onWheel={(e) => {
+            if ((e.target as HTMLElement).closest('.mentor')) return;
+            nudgeThrottle(e.deltaY < 0 ? 0.03 : -0.03);
+          }}
           title="滚轮调手油门"
         >
           <EngineView shake={shake} />
+          <MentorPanel />
         </div>
         <aside className="stage-gauges">
           <Tach />
@@ -110,12 +121,21 @@ export default function App(): React.ReactElement {
 
       {drawer && (
         <aside className="drawer" aria-label={DRAWERS.find((d) => d.id === drawer)?.label}>
-          <header className="drawer-head">
-            <h2>{DRAWERS.find((d) => d.id === drawer)?.label}</h2>
-            <button type="button" className="btn btn--ghost" onClick={() => setDrawer(null)}>
-              收起
-            </button>
-          </header>
+          <div className="drawer-top">
+            <header className="drawer-head">
+              <nav className="drawer-tabs" aria-label="面板">
+                {DRAWERS.map((d) => (
+                  <button key={d.id} type="button" className={drawer === d.id ? 'is-on' : ''} onClick={() => setDrawer(d.id)}>
+                    {d.label}
+                  </button>
+                ))}
+              </nav>
+              <button type="button" className="btn btn--ghost" onClick={() => setDrawer(null)}>
+                收起
+              </button>
+            </header>
+            <LiveStrip />
+          </div>
           {drawer === 'build' && <BuildSheet />}
           {drawer === 'ecu' && <EcuPanel />}
           {drawer === 'dyno' && <DynoPanel />}

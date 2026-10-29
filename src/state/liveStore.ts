@@ -20,9 +20,23 @@ export interface FeedItem {
 const MAX_TRACES = 8;
 const MAX_FEED = 6;
 const MERGE_WINDOW = 1.5;
+/** Time constant of the smoothed read-outs, s. */
+const METRIC_TAU = 0.4;
+
+/** Cycle results smoothed over a few tenths of a second, for comparing before and after a change. */
+export interface Metrics {
+  rpm: number;
+  torque: number;
+  brakeTorque: number;
+  ve: number;
+  lambda: number;
+  pmaxDeg: number;
+  egt: number;
+}
 
 interface LiveState {
   snapshot: EngineSnapshot | null;
+  metrics: Metrics | null;
   /** Most recent first. */
   traces: CycleTrace[];
   traceSerial: number;
@@ -61,14 +75,61 @@ function describe(e: CoreEvent): Described | null {
   }
 }
 
+type EventListener = (events: CoreEvent[]) => void;
+const eventListeners = new Set<EventListener>();
+
+/** Raw solver events as they arrive. Returns an unsubscribe function. */
+export function onCoreEvents(fn: EventListener): () => void {
+  eventListeners.add(fn);
+  return () => eventListeners.delete(fn);
+}
+
+let metricCycle = -1;
+let metricTime = 0;
+
+function nextMetrics(prev: Metrics | null, s: EngineSnapshot): Metrics | null {
+  const c = s.cycle;
+  if (s.status !== 'running' || !c) {
+    metricCycle = -1;
+    return null;
+  }
+  if (c.index === metricCycle) return prev;
+  metricCycle = c.index;
+  const now: Metrics = {
+    rpm: c.rpm,
+    torque: c.torque,
+    brakeTorque: c.brakeTorque,
+    ve: c.ve,
+    lambda: c.misfire ? (prev?.lambda ?? c.lambda) : c.lambda,
+    pmaxDeg: c.pmaxDeg,
+    egt: s.egtC,
+  };
+  const dt = Math.max(0, s.time - metricTime);
+  metricTime = s.time;
+  if (!prev) return now;
+  const a = 1 - Math.exp(-dt / METRIC_TAU);
+  const mix = (k: keyof Metrics): number => prev[k] + (now[k] - prev[k]) * a;
+  return {
+    rpm: mix('rpm'),
+    torque: mix('torque'),
+    brakeTorque: mix('brakeTorque'),
+    ve: mix('ve'),
+    lambda: mix('lambda'),
+    pmaxDeg: mix('pmaxDeg'),
+    egt: mix('egt'),
+  };
+}
+
 export const useLive = create<LiveState>()((set, get) => ({
   snapshot: null,
+  metrics: null,
   traces: [],
   traceSerial: 0,
   feed: [],
-  setSnapshot: (snapshot) => set({ snapshot }),
+  setSnapshot: (snapshot) => set({ snapshot, metrics: nextMetrics(get().metrics, snapshot) }),
   pushTrace: (t) => set({ traces: [t, ...get().traces].slice(0, MAX_TRACES), traceSerial: get().traceSerial + 1 }),
   pushEvents: (events) => {
+    for (const fn of eventListeners) fn(events);
     const now = get().snapshot?.time ?? 0;
     let feed = get().feed;
     for (const e of events) {

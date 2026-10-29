@@ -2,6 +2,8 @@ import { useBench } from '../state/benchStore';
 import { useControls } from '../state/controlStore';
 import { clearPull, pullPoints, savePull, startSweep, stopSweep, useLink } from '../state/engineLink';
 import { useLive } from '../state/liveStore';
+import { stopTune } from '../mentor/brain';
+import { useMentor } from '../mentor/store';
 
 const W = 420;
 const H = 240;
@@ -29,6 +31,7 @@ export function DynoPanel(): React.ReactElement {
   const pull = useLink((s) => s.pull);
   const sweeping = useControls((s) => s.sweeping);
   const running = useLive((s) => s.snapshot?.status === 'running');
+  const tuning = useMentor((s) => s.tuning !== null);
   const current = pullPoints(pull);
 
   const all = [...runs.flatMap((r) => r.points), ...current];
@@ -51,18 +54,18 @@ export function DynoPanel(): React.ReactElement {
       </p>
       <div className="dyno-actions">
         {sweeping ? (
-          <button type="button" className="btn" onClick={() => stopSweep(false)}>
+          <button type="button" className="btn" onClick={() => (tuning ? stopTune() : stopSweep(false))}>
             停止扫转速
           </button>
         ) : (
-          <button type="button" className="btn btn--primary" disabled={!running} onClick={startSweep}>
+          <button type="button" className="btn btn--primary" disabled={!running || tuning} onClick={() => startSweep()}>
             自动扫转速
           </button>
         )}
-        <button type="button" className="btn" disabled={current.length < 3 || sweeping} onClick={savePull}>
+        <button type="button" className="btn" disabled={current.length < 3 || sweeping} onClick={() => savePull()}>
           保存当前曲线
         </button>
-        <button type="button" className="btn" disabled={current.length === 0 || sweeping} onClick={clearPull}>
+        <button type="button" className="btn" disabled={current.length === 0 || sweeping} onClick={() => clearPull()}>
           清掉当前
         </button>
       </div>

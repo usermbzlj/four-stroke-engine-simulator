@@ -21,7 +21,14 @@
  */
 
 import type { BenchConfig, EcuConfig, EngineConfig } from './config';
-import { DEFAULT_BENCH, LIFT_PROFILE_STRETCH, displacementCc, rodInertiaForce, valveFloatRpm } from './config';
+import {
+  DEFAULT_BENCH,
+  LIFT_PROFILE_STRETCH,
+  blockChanged,
+  displacementCc,
+  rodInertiaForce,
+  valveFloatRpm,
+} from './config';
 import { createRng, type Rng } from './rng';
 
 // ---------------------------------------------------------------------------
@@ -486,6 +493,32 @@ export class EngineCore {
     this.setConfig(config);
     this.omega = 0;
     this.resetGas();
+  }
+
+  /**
+   * Swap parts without stopping the crank. The gas in a pipe whose volume
+   * changed is rescaled so its pressure carries over instead of jumping.
+   */
+  tune(config: EngineConfig): void {
+    if (blockChanged(this.config, config)) {
+      this.rebuild(config);
+      return;
+    }
+    const runnerVol = this.runnerVol;
+    const headerVol = this.headerVol;
+    const mufflerVol = this.mufflerVol;
+    this.setConfig(config);
+    const ri = this.runnerVol / runnerVol;
+    this.mIp *= ri;
+    this.burnedIp *= ri;
+    const he = this.headerVol / headerVol;
+    this.mEp *= he;
+    this.airEp *= he;
+    this.fuelEp *= he;
+    const mf = this.mufflerVol / mufflerVol;
+    this.mMf *= mf;
+    this.airMf *= mf;
+    this.fuelMf *= mf;
   }
 
   // ---- kinematics ----------------------------------------------------------

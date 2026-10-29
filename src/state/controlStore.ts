@@ -12,6 +12,8 @@ interface ControlState {
   brakeRpm: number;
   /** An automatic dyno pull is running. */
   sweeping: boolean;
+  /** The mentor has the throttle: overrides hand, pedal and sweep while set. */
+  autoThrottle: number | null;
   set: (patch: Partial<Omit<ControlState, 'set'>>) => void;
 }
 
@@ -23,9 +25,11 @@ export const useControls = create<ControlState>()((set) => ({
   brakeMode: 'off',
   brakeRpm: 4000,
   sweeping: false,
+  autoThrottle: null,
   set: (patch) => set(patch),
 }));
 
-export function effectiveThrottle(s: Pick<ControlState, 'hand' | 'pedal' | 'sweeping'>): number {
+export function effectiveThrottle(s: Pick<ControlState, 'hand' | 'pedal' | 'sweeping' | 'autoThrottle'>): number {
+  if (s.autoThrottle !== null) return s.autoThrottle;
   return s.sweeping ? 1 : Math.max(s.hand, s.pedal);
 }

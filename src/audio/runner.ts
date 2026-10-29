@@ -41,6 +41,10 @@ export class EngineRunner {
         core.rebuild(cmd.config);
         this.synth?.setConfig(cmd.config);
         break;
+      case 'tune':
+        core.tune(cmd.config);
+        this.synth?.setConfig(cmd.config);
+        break;
       case 'ecu':
         core.setEcu(cmd.ecu);
         break;

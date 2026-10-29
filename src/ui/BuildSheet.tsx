@@ -1,18 +1,8 @@
-import {
-  CONFIG_LIMITS,
-  PRESETS,
-  displacementCc,
-  maxValveDiameters,
-  meanPistonSpeed,
-  overlapDeg,
-  rodBreakRpm,
-  valveFloatRpm,
-  type EngineConfig,
-  type MufflerType,
-} from '../sim/config';
+import { BLOCK_KEYS, CONFIG_LIMITS, DEFAULT_PRESET, PRESETS, maxValveDiameters, type EngineConfig, type MufflerType } from '../sim/config';
 import { useBench } from '../state/benchStore';
+import { useControls } from '../state/controlStore';
 import { useLive } from '../state/liveStore';
-import { Choice, Fact, Slider } from './fields';
+import { Choice, Slider } from './fields';
 
 type NumericKey = keyof typeof CONFIG_LIMITS;
 
@@ -73,94 +63,100 @@ const MUFFLERS: { value: MufflerType; label: string }[] = [
   { value: 'open', label: '直通' },
 ];
 
+const isBlock = (k: string): boolean => (BLOCK_KEYS as readonly string[]).includes(k);
+
 export function BuildSheet(): React.ReactElement {
   const config = useBench((s) => s.config);
   const presetId = useBench((s) => s.presetId);
-  const limiter = useBench((s) => s.ecu.limiterRpm);
+  const baseId = useBench((s) => s.basePresetId);
   const setConfig = useBench((s) => s.setConfig);
   const loadPreset = useBench((s) => s.loadPreset);
   const status = useLive((s) => s.snapshot?.status ?? 'off');
-  const locked = status === 'running' || status === 'cranking';
-
-  const cc = displacementCc(config);
-  const floatRpm = valveFloatRpm(config);
-  const rodRpm = rodBreakRpm(config);
-  const sp = meanPistonSpeed(config, limiter);
+  const turning = status === 'running' || status === 'cranking';
+  const factory = (PRESETS.find((p) => p.id === baseId) ?? DEFAULT_PRESET).engine;
   const fit = maxValveDiameters(config);
 
   const set = <K extends keyof EngineConfig>(key: K) => (v: EngineConfig[K]) => setConfig({ [key]: v } as Partial<EngineConfig>);
 
   return (
     <div className="sheet">
-      <div className="facts">
-        <Fact label="排量" value={`${cc.toFixed(0)} cc`} />
-        <Fact label="缸径行程比" value={(config.bore / config.stroke).toFixed(2)} />
-        <Fact label="气门重叠角" value={`${overlapDeg(config).toFixed(0)}°`} />
-        <Fact label="气门飘浮" value={`${Math.round(floatRpm).toLocaleString('en-US')} rpm`} tone={floatRpm < limiter ? 'alarm' : undefined} />
-        <Fact label="连杆拉断" value={`${Math.round(rodRpm).toLocaleString('en-US')} rpm`} tone={rodRpm < limiter * 1.05 ? 'alarm' : undefined} />
-        <Fact label="断火时活塞均速" value={`${sp.toFixed(1)} m/s`} tone={sp > 25 ? 'alarm' : undefined} />
-      </div>
-
+      <p className="sheet-intro">除了缸体，所有零件都能在发动机运转时换，扭矩和声音当场就变。滑块上的小刻度是出厂值。</p>
       <Choice
         label="底子"
         value={presetId}
+        disabled={turning}
         options={[...PRESETS.map((p) => ({ value: p.id, label: p.name })), ...(presetId === 'custom' ? [{ value: 'custom', label: '自己改的' }] : [])]}
-        onChange={(id) => id !== 'custom' && !locked && loadPreset(id)}
+        onChange={(id) => id !== 'custom' && loadPreset(id)}
       />
 
-      {locked && <p className="sheet-lock">发动机在转。熄火后才能拆装零件；ECU 可以随时改。</p>}
-
-      <fieldset disabled={locked} className="sheet-body">
-        {FIELDS.map((g) => (
+      {FIELDS.map((g) => {
+        const block = g.keys.every(([k]) => isBlock(k));
+        const locked = block && turning;
+        return (
           <section key={g.title} className="sheet-group">
             <h3>{g.title}</h3>
-            {g.title === '配气' && (
-              <>
-                <Choice
-                  label="每缸进气门"
-                  value={config.intakeValves}
-                  options={[
-                    { value: 1, label: '1 个' },
-                    { value: 2, label: '2 个' },
-                  ]}
-                  onChange={set('intakeValves')}
-                />
-                <Choice
-                  label="每缸排气门"
-                  value={config.exhaustValves}
-                  options={[
-                    { value: 1, label: '1 个' },
-                    { value: 2, label: '2 个' },
-                  ]}
-                  onChange={set('exhaustValves')}
-                />
-              </>
+            {block && turning && (
+              <p className="sheet-lock">
+                缸体件要熄火才能换。
+                <button type="button" className="btn btn--ghost" onClick={() => useControls.getState().set({ ignition: false })}>
+                  熄火 <kbd>K</kbd>
+                </button>
+              </p>
             )}
-            {g.keys.map(([key, label, unit, digits, hint]) => {
-              const [min, max0, step] = CONFIG_LIMITS[key];
-              const max =
-                key === 'intakeValveDiameter' ? fit.intake : key === 'exhaustValveDiameter' ? fit.exhaust : max0;
-              return (
-                <Slider
-                  key={key}
-                  label={label}
-                  value={config[key]}
-                  min={min}
-                  max={max}
-                  step={step}
-                  unit={unit}
-                  digits={digits}
-                  {...(hint ? { hint } : {})}
-                  onChange={set(key)}
-                />
-              );
-            })}
-            {g.title === '进排气' && (
-              <Choice label="消音器" value={config.muffler} options={MUFFLERS} onChange={set('muffler')} />
-            )}
+            <fieldset disabled={locked} className="sheet-body">
+              {g.title === '配气' && (
+                <>
+                  <Choice
+                    label="每缸进气门"
+                    param="config.intakeValves"
+                    value={config.intakeValves}
+                    reference={factory.intakeValves}
+                    options={[
+                      { value: 1, label: '1 个' },
+                      { value: 2, label: '2 个' },
+                    ]}
+                    onChange={set('intakeValves')}
+                  />
+                  <Choice
+                    label="每缸排气门"
+                    param="config.exhaustValves"
+                    value={config.exhaustValves}
+                    reference={factory.exhaustValves}
+                    options={[
+                      { value: 1, label: '1 个' },
+                      { value: 2, label: '2 个' },
+                    ]}
+                    onChange={set('exhaustValves')}
+                  />
+                </>
+              )}
+              {g.keys.map(([key, label, unit, digits, hint]) => {
+                const [min, max0, step] = CONFIG_LIMITS[key];
+                const max = key === 'intakeValveDiameter' ? fit.intake : key === 'exhaustValveDiameter' ? fit.exhaust : max0;
+                return (
+                  <Slider
+                    key={key}
+                    label={label}
+                    param={`config.${key}`}
+                    value={config[key]}
+                    reference={factory[key]}
+                    min={min}
+                    max={max}
+                    step={step}
+                    unit={unit}
+                    digits={digits}
+                    {...(hint ? { hint } : {})}
+                    onChange={set(key)}
+                  />
+                );
+              })}
+              {g.title === '进排气' && (
+                <Choice label="消音器" param="config.muffler" value={config.muffler} reference={factory.muffler} options={MUFFLERS} onChange={set('muffler')} />
+              )}
+            </fieldset>
           </section>
-        ))}
-      </fieldset>
+        );
+      })}
     </div>
   );
 }

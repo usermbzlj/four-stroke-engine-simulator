@@ -353,6 +353,16 @@ export const CONFIG_LIMITS: Record<Exclude<keyof EngineConfig, 'muffler'>, [numb
   radiatorCapacity: [0.6, 2, 0.05],
 };
 
+/**
+ * Parts that set the swept and clearance volume. Everything else can be
+ * swapped with the engine running; these need the crank stopped.
+ */
+export const BLOCK_KEYS = ['bore', 'stroke', 'rodLength', 'compressionRatio'] as const;
+
+export function blockChanged(a: EngineConfig, b: EngineConfig): boolean {
+  return BLOCK_KEYS.some((k) => a[k] !== b[k]);
+}
+
 export function clampConfig(c: EngineConfig): EngineConfig {
   const out = { ...c };
   for (const key of Object.keys(CONFIG_LIMITS) as (keyof typeof CONFIG_LIMITS)[]) {

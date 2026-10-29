@@ -12,6 +12,8 @@ export type HostCommand =
   | { type: 'controls'; controls: Partial<Controls> }
   /** Swap the engine on the stand. The crank is stopped and the gas reset. */
   | { type: 'rebuild'; config: EngineConfig }
+  /** Swap bolt-on parts with the engine running; block changes fall back to a rebuild. */
+  | { type: 'tune'; config: EngineConfig }
   | { type: 'ecu'; ecu: EcuConfig }
   | { type: 'bench'; bench: BenchConfig }
   /** Fit new parts after a failure. */

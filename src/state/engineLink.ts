@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { startEngineHost, type EngineHost } from '../audio/host';
 import type { EngineMessage, HostCommand } from '../audio/protocol';
-import { useBench } from './benchStore';
+import { blockChanged } from '../sim/config';
+import { useBench, type DynoRun } from './benchStore';
 import { effectiveThrottle, useControls } from './controlStore';
 import { useLive } from './liveStore';
 
@@ -68,19 +69,27 @@ export function clearPull(): void {
   useLink.setState({ pull: {} });
 }
 
-export function savePull(): void {
+export function savePull(label?: string): DynoRun | null {
   const points = pullPoints(useLink.getState().pull);
-  if (points.length >= 3) useBench.getState().addRun(points);
+  const run = points.length >= 3 ? useBench.getState().addRun(points, label) : null;
   clearPull();
+  return run;
 }
 
 let sweepTimer = 0;
+let sweepLabel: string | undefined;
+let sweepDone: ((run: DynoRun | null) => void) | undefined;
 
 /** Hold full throttle and walk the brake set point from low to high speed. */
-export function startSweep(): void {
+export function startSweep(opts: { label?: string; onDone?: (run: DynoRun | null) => void } = {}): void {
   const { ecu } = useBench.getState();
   const s = useLive.getState().snapshot;
-  if (!s || s.status !== 'running') return;
+  if (!s || s.status !== 'running') {
+    opts.onDone?.(null);
+    return;
+  }
+  sweepLabel = opts.label;
+  sweepDone = opts.onDone;
   clearPull();
   const from = Math.max(ecu.idleRpm + 600, 2000);
   const to = ecu.limiterRpm - 250;
@@ -113,7 +122,11 @@ export function stopSweep(save: boolean): void {
   window.clearInterval(sweepTimer);
   recording = true;
   useControls.getState().set({ sweeping: false, brakeMode: 'off' });
-  if (save) savePull();
+  const run = save ? savePull(sweepLabel) : null;
+  const done = sweepDone;
+  sweepDone = undefined;
+  sweepLabel = undefined;
+  done?.(run);
 }
 
 /** Bring the cell up. Must be called from a user gesture so audio can start. */
@@ -144,7 +157,7 @@ useControls.subscribe(pushControls);
 
 useBench.subscribe((s, prev) => {
   if (s.config !== prev.config) {
-    send({ type: 'rebuild', config: s.config });
+    send({ type: blockChanged(prev.config, s.config) ? 'rebuild' : 'tune', config: s.config });
     clearPull();
   }
   if (s.ecu !== prev.ecu) send({ type: 'ecu', ecu: s.ecu });
@@ -155,6 +168,6 @@ useBench.subscribe((s, prev) => {
 /** Fit new parts after a failure. */
 export function restoreEngine(): void {
   send({ type: 'restore' });
-  useControls.getState().set({ starter: false, hand: 0, pedal: 0, sweeping: false, brakeMode: 'off' });
+  useControls.getState().set({ starter: false, hand: 0, pedal: 0, sweeping: false, brakeMode: 'off', autoThrottle: null });
   useLive.getState().clearFeed();
 }
