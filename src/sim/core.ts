@@ -62,6 +62,8 @@ const KNOCK_TAU_SCALE = 2.4;
 /** Fuel mass fraction below which exhaust gas is too dilute to light as a slug. */
 const AFTERFIRE_MIN_FUEL_FRACTION = 0.025;
 const KNOCK_MIN_RPM = 700;
+/** Exponent from grip position to blade angle; 1 would be a linear pulley. */
+const THROTTLE_PROGRESSION = 1.8;
 /** Knock intensity the piston shrugs off; trace knock is normal at the limit. */
 const KNOCK_HARMLESS = 0.08;
 /** Laminar flame progress expressed as an equivalent crank speed (~300 rpm). */
@@ -586,7 +588,8 @@ export class EngineCore {
     const cmd = clamp(ctl.throttle, 0, 1);
     this.throttleActual += (cmd - this.throttleActual) * Math.min(1, h / 0.025);
     this.updateIdleAir(rpm, h);
-    const phi = 6 + this.throttleActual * 84;
+    // Progressive grip: the first part of the travel opens the blade gently.
+    const phi = 6 + Math.pow(this.throttleActual, THROTTLE_PROGRESSION) * 84;
     const butterfly = this.throttleArea * clamp(1 - Math.cos(phi * DEG) / Math.cos(6 * DEG), 0, 1);
     const bypass = this.throttleArea * this.iac;
     const throttleCdA = 0.8 * (butterfly + bypass) + 0.6e-6;
@@ -945,17 +948,19 @@ export class EngineCore {
       this.iac = this.iacBase * 1.6;
       return;
     }
-    const engaged = this.controls.throttle < 0.03 && rpm < target + 2500;
+    // Stays in at a cracked throttle so a small grip opening never starves the engine below idle.
+    const closed = this.controls.throttle < 0.03;
+    const engaged = this.controls.throttle < 0.3 && rpm < target + 2500;
     if (!engaged) {
       this.iac = 0;
       return;
     }
     const err = (target - rpm) / 1000;
-    // Learn only near idle, so a flare after start or a blip does not unwind it.
-    if (Math.abs(err) < 0.4) this.iacIntegral = clamp(this.iacIntegral + err * 0.5 * h, -0.6, 1.5);
+    // Learn only at a closed throttle near idle, so a flare after start or a blip does not unwind it.
+    if (closed && Math.abs(err) < 0.4) this.iacIntegral = clamp(this.iacIntegral + err * 0.5 * h, -0.6, 1.5);
     const gain = err > 0 ? 0.08 : 0.03;
     const opening = this.iacBase * (1 + this.iacIntegral) + err * gain;
-    this.iac = Math.max(clamp(opening, 0, 0.2), this.dashpot);
+    this.iac = closed ? Math.max(clamp(opening, 0, 0.2), this.dashpot) : clamp(opening, 0, 0.2);
   }
 
   /** Fire the events whose crank angle lies in (from, to]. */
