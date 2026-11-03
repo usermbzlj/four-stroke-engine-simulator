@@ -60,20 +60,12 @@ export function Readouts(): React.ReactElement {
         <Reading label="水温" value={s ? s.coolantC.toFixed(0) : '—'} unit="°C" tone={s && s.coolantC > 110 ? 'alarm' : undefined} />
         <Reading label="机油" value={s ? s.oilC.toFixed(0) : '—'} unit="°C" note={s ? `${s.oilPressure.toFixed(1)} bar` : undefined} />
       </div>
-      <div className="readouts-group">
-        <Reading
-          label="活塞损伤"
-          value={s ? (s.pistonDamage * 100).toFixed(1) : '—'}
-          unit="%"
-          tone={s && s.pistonDamage > 0.3 ? 'alarm' : undefined}
-        />
-        <Reading
-          label="连杆疲劳"
-          value={s ? (s.rodFatigue * 100).toFixed(1) : '—'}
-          unit="%"
-          tone={s && s.rodFatigue > 0.3 ? 'alarm' : undefined}
-        />
-      </div>
+      {s && (s.pistonDamage > 0.002 || s.rodFatigue > 0.002) && (
+        <div className="readouts-group">
+          <Reading label="活塞损伤" value={(s.pistonDamage * 100).toFixed(1)} unit="%" tone={s.pistonDamage > 0.3 ? 'alarm' : undefined} />
+          <Reading label="连杆疲劳" value={(s.rodFatigue * 100).toFixed(1)} unit="%" tone={s.rodFatigue > 0.3 ? 'alarm' : undefined} />
+        </div>
+      )}
     </div>
   );
 }

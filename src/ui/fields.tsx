@@ -1,4 +1,5 @@
 import { useId } from 'react';
+import { useGame } from '../game/store';
 import { useUi } from '../state/uiStore';
 
 /** Thumb width of the range input, px; keeps the factory mark under the thumb's centre. */
@@ -34,6 +35,7 @@ export function Slider({ label, value, min, max, step, unit, digits = 0, hint, p
   const hasRef = reference !== undefined && reference >= min && reference <= max;
   const changed = hasRef && Math.abs(value - reference) > step / 2;
   const refPct = hasRef ? ((reference - min) / (max - min)) * 100 : 0;
+  const refName = useGame((s) => (s.mode === 'job' ? '原值' : '出厂'));
   return (
     <div className={`field${active ? ' is-active' : ''}${changed ? ' is-changed' : ''}`}>
       <label htmlFor={id} className="field-label">
@@ -47,9 +49,9 @@ export function Slider({ label, value, min, max, step, unit, digits = 0, hint, p
             touch();
             onChange(reference);
           }}
-          title="恢复出厂值"
+          title={`恢复${refName}`}
         >
-          出厂 {reference.toFixed(digits)}
+          {refName} {reference.toFixed(digits)}
         </button>
       )}
       <output htmlFor={id} className="field-value">

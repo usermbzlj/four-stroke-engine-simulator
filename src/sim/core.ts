@@ -1040,7 +1040,9 @@ export class EngineCore {
 
     if (reason) {
       this.cycMisfire = true;
-      if (lambda < 50) this.events.push({ kind: 'misfire', reason });
+      // With the injector shut (overrun or fuel-cut limiter) a lean miss is expected, not news.
+      const fuelCut = this.overrunCut || (this.limiterCut && this.ecu.limiterMode === 'fuel');
+      if (lambda < 50 && !(fuelCut && reason === 'lean')) this.events.push({ kind: 'misfire', reason });
       return;
     }
 

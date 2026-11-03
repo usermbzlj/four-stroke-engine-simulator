@@ -179,6 +179,19 @@ useBench.subscribe((s, prev) => {
   if (s.volume !== prev.volume) send({ type: 'volume', volume: s.volume });
 });
 
+/**
+ * A different engine goes on the stand: stop the crank, fit fresh parts and
+ * hand the controls back to idle.
+ */
+export function resetStand(): void {
+  if (useControls.getState().sweeping) stopSweep(false);
+  send({ type: 'rebuild', config: useBench.getState().config });
+  send({ type: 'restore' });
+  useControls.getState().set({ starter: false, hand: 0, pedal: 0, sweeping: false, brakeMode: 'off', autoThrottle: null });
+  clearPull();
+  useLive.getState().clearFeed();
+}
+
 /** Fit new parts after a failure. */
 export function restoreEngine(): void {
   send({ type: 'restore' });

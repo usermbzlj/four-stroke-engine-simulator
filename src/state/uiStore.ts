@@ -5,6 +5,7 @@ import { useControls } from './controlStore';
 import { useLive, type Metrics } from './liveStore';
 
 export type Drawer = 'build' | 'ecu' | 'dyno';
+export type View = 'home' | 'board' | 'bench';
 
 /** The knob the user is working on, and how the engine was doing before they touched it. */
 export interface Focus {
@@ -21,8 +22,13 @@ export interface Focus {
 }
 
 interface UiState {
+  view: View;
+  /** Keyboard help overlay. */
+  help: boolean;
   drawer: Drawer | null;
   focus: Focus | null;
+  setView: (v: View) => void;
+  setHelp: (on: boolean) => void;
   setDrawer: (d: Drawer | null) => void;
   touch: (param: string, label: string) => void;
   clearFocus: () => void;
@@ -36,8 +42,12 @@ const BASELINE_MS = 30000;
 let expiry = 0;
 
 export const useUi = create<UiState>()((set, get) => ({
+  view: 'home',
+  help: false,
   drawer: null,
   focus: null,
+  setView: (view) => set({ view }),
+  setHelp: (help) => set({ help }),
   setDrawer: (drawer) => set({ drawer }),
   touch: (param, label) => {
     const now = performance.now();

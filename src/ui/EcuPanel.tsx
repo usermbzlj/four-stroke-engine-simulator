@@ -1,6 +1,6 @@
 import { safeLimiter } from '../mentor/advice';
 import { useMentor } from '../mentor/store';
-import { DEFAULT_BENCH, DEFAULT_PRESET, PRESETS } from '../sim/config';
+import { DEFAULT_BENCH } from '../sim/config';
 import { useBench } from '../state/benchStore';
 import { Choice, Slider } from './fields';
 
@@ -12,10 +12,9 @@ const ON_OFF = [
 export function EcuPanel(): React.ReactElement {
   const ecu = useBench((s) => s.ecu);
   const bench = useBench((s) => s.bench);
-  const baseId = useBench((s) => s.basePresetId);
   const setEcu = useBench((s) => s.setEcu);
   const setBench = useBench((s) => s.setBench);
-  const factory = (PRESETS.find((p) => p.id === baseId) ?? DEFAULT_PRESET).ecu;
+  const factory = useBench((s) => s.baseline.ecu);
   const protect = useMentor((s) => s.protect);
   const config = useBench((s) => s.config);
   const guard = safeLimiter(config);

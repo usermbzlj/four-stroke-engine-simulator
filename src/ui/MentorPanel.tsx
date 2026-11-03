@@ -3,24 +3,9 @@ import { autoTune, nextLessonStep, quitLesson, startLesson, stopTune } from '../
 import { LESSON } from '../mentor/lessons';
 import { dismiss, useMentor, type MentorMessage } from '../mentor/store';
 import { TITLES } from '../mentor/voice';
+import { useGame } from '../game/store';
 
 const VISIBLE = 3;
-
-/** One-line echo of 老周's latest useful line, pinned under the live strip. */
-export function MentorStrip(): React.ReactElement | null {
-  const messages = useMentor((s) => s.messages);
-  const m = messages.find((x) => x.tone === 'danger') ?? messages.find((x) => x.tone === 'warn') ?? messages.find((x) => x.tone !== 'joke') ?? null;
-  if (!m) return null;
-  return (
-    <div className={`mentor-strip mentor-strip--${m.tone}`}>
-      <span className="mentor-face">周</span>
-      <p>
-        {m.head && <b>{m.head}</b>}
-        {m.text}
-      </p>
-    </div>
-  );
-}
 
 function Message({ m }: { m: MentorMessage }): React.ReactElement {
   return (
@@ -62,6 +47,7 @@ export function MentorPanel(): React.ReactElement {
   const tuning = useMentor((s) => s.tuning);
   const set = useMentor((s) => s.set);
   const [history, setHistory] = useState(false);
+  const inJob = useGame((s) => s.mode === 'job');
 
   const urgent = messages.some((m) => m.tone === 'danger');
   if (!open) {
@@ -103,7 +89,7 @@ export function MentorPanel(): React.ReactElement {
           <button type="button" className="btn btn--small" onClick={() => stopTune()}>
             停下
           </button>
-        ) : (
+        ) : inJob ? null : (
           <button type="button" className="btn btn--small btn--mentor" onClick={() => void autoTune()}>
             老周调一遍
           </button>

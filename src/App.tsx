@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { startMentor } from './mentor/brain';
+import { useGame } from './game/store';
+import { jobById, JOBS } from './game/jobs';
 import { PRESETS, displacementCc } from './sim/config';
 import { useBench } from './state/benchStore';
 import { useLink } from './state/engineLink';
@@ -12,38 +14,56 @@ import { EcuPanel } from './ui/EcuPanel';
 import { EngineView } from './ui/EngineView';
 import { EventFeed } from './ui/EventFeed';
 import { FailureReport } from './ui/FailureReport';
+import { HelpOverlay } from './ui/HelpOverlay';
+import { AcceptanceDialog } from './ui/job/AcceptanceDialog';
+import { JobBoard } from './ui/job/JobBoard';
+import { JobCard } from './ui/job/JobCard';
 import { LiveStrip } from './ui/LiveStrip';
-import { MentorPanel, MentorStrip } from './ui/MentorPanel';
+import { MentorPanel } from './ui/MentorPanel';
 import { Readouts } from './ui/Readouts';
 import { Scope } from './ui/Scope';
 import { StartScreen } from './ui/StartScreen';
 import { Tach } from './ui/Tach';
 import { nudgeThrottle, useBenchInput } from './ui/useBenchInput';
 
-const DRAWERS: { id: Drawer; label: string }[] = [
-  { id: 'build', label: '改装单' },
-  { id: 'ecu', label: 'ECU' },
-  { id: 'dyno', label: '测功' },
+const DRAWERS: { id: Drawer; label: string; key: string }[] = [
+  { id: 'build', label: '改装单', key: 'Q' },
+  { id: 'ecu', label: 'ECU', key: 'W' },
+  { id: 'dyno', label: '测功', key: 'E' },
 ];
 
-export default function App(): React.ReactElement {
-  const started = useLink((s) => s.started);
-  const audible = useLink((s) => s.audible);
+function Title(): React.ReactElement {
+  const mode = useGame((s) => s.mode);
+  const jobId = useGame((s) => s.jobId);
   const config = useBench((s) => s.config);
   const presetId = useBench((s) => s.presetId);
+  const baseline = useBench((s) => s.baseline);
+  const job = mode === 'job' ? jobById(jobId) : undefined;
+  const name = job
+    ? `工单 ${JOBS.indexOf(job) + 1} · ${job.title}`
+    : (PRESETS.find((p) => p.id === presetId)?.name ?? `${baseline.name}（改）`);
+  return (
+    <div className="topbar-id">
+      <h1>{name}</h1>
+      <span>
+        {displacementCc(config).toFixed(0)} cc · {config.bore}×{config.stroke} mm · 压缩比 {config.compressionRatio}
+      </span>
+    </div>
+  );
+}
+
+function Bench(): React.ReactElement {
+  const audible = useLink((s) => s.audible);
   const volume = useBench((s) => s.volume);
   const setVolume = useBench((s) => s.setVolume);
   const failure = useLive((s) => s.snapshot?.failure ?? null);
   const drawer = useUi((s) => s.drawer);
   const setDrawer = useUi((s) => s.setDrawer);
+  const setView = useUi((s) => s.setView);
+  const setHelp = useUi((s) => s.setHelp);
+  const mode = useGame((s) => s.mode);
   const [shake, setShake] = useState(false);
   const lastFailure = useRef<string | null>(null);
-
-  useBenchInput(started);
-
-  useEffect(() => {
-    if (started) startMentor();
-  }, [started]);
 
   useEffect(() => {
     const sig = failure ? `${failure.kind}:${Math.round(failure.rpm)}:${Math.round(failure.crankDeg)}` : null;
@@ -57,19 +77,13 @@ export default function App(): React.ReactElement {
     return undefined;
   }, [failure]);
 
-  if (!started) return <StartScreen />;
-
-  const presetName = PRESETS.find((p) => p.id === presetId)?.name ?? '改装发动机';
-
   return (
     <div className={`bench${drawer ? ' has-drawer' : ''}`}>
       <header className="topbar">
-        <div className="topbar-id">
-          <h1>{presetName}</h1>
-          <span>
-            {displacementCc(config).toFixed(0)} cc，{config.bore}×{config.stroke} mm
-          </span>
-        </div>
+        <button type="button" className="topbar-home" onClick={() => setView('board')} title="工单列表">
+          <span aria-hidden="true">☰</span> 工单
+        </button>
+        <Title />
         <nav className="topbar-tabs" aria-label="面板">
           {DRAWERS.map((d) => (
             <button
@@ -78,13 +92,14 @@ export default function App(): React.ReactElement {
               className={drawer === d.id ? 'is-on' : ''}
               aria-expanded={drawer === d.id}
               onClick={() => setDrawer(drawer === d.id ? null : d.id)}
+              title={`快捷键 ${d.key}`}
             >
-              {d.label}
+              {d.label} <kbd>{d.key}</kbd>
             </button>
           ))}
         </nav>
         <label className="topbar-volume">
-          <span>{audible ? '音量' : '没有声音输出'}</span>
+          <span>{audible ? '音量' : '无声音'}</span>
           <input
             type="range"
             min={0}
@@ -96,55 +111,81 @@ export default function App(): React.ReactElement {
             aria-label="音量"
           />
         </label>
+        <button type="button" className="topbar-help" onClick={() => setHelp(true)} aria-label="按键说明">
+          ?
+        </button>
       </header>
 
       <main className="stage">
+        <aside className="side" aria-label={mode === 'job' ? '工单和老周' : '老周'}>
+          {mode === 'job' && <JobCard />}
+          <MentorPanel />
+        </aside>
         <div
           className="stage-engine"
-          onWheel={(e) => {
-            if ((e.target as HTMLElement).closest('.mentor')) return;
-            nudgeThrottle(e.deltaY < 0 ? 0.03 : -0.03);
-          }}
+          onWheel={(e) => nudgeThrottle(e.deltaY < 0 ? 0.03 : -0.03)}
           title="滚轮调手油门"
         >
           <EngineView shake={shake} />
-          <MentorPanel />
         </div>
-        <aside className="stage-gauges">
+        <aside className="stage-gauges" aria-label="仪表">
           <Tach />
           <Readouts />
           <EventFeed />
         </aside>
         <Scope />
+
+        {drawer && (
+          <aside className="drawer" aria-label={DRAWERS.find((d) => d.id === drawer)?.label}>
+            <div className="drawer-top">
+              <header className="drawer-head">
+                <nav className="drawer-tabs" aria-label="面板">
+                  {DRAWERS.map((d) => (
+                    <button key={d.id} type="button" className={drawer === d.id ? 'is-on' : ''} onClick={() => setDrawer(d.id)}>
+                      {d.label}
+                    </button>
+                  ))}
+                </nav>
+                <button type="button" className="btn btn--ghost btn--small" onClick={() => setDrawer(null)}>
+                  收起 <kbd>Esc</kbd>
+                </button>
+              </header>
+              <LiveStrip />
+            </div>
+            <div className="drawer-body">
+              {drawer === 'build' && <BuildSheet />}
+              {drawer === 'ecu' && <EcuPanel />}
+              {drawer === 'dyno' && <DynoPanel />}
+            </div>
+          </aside>
+        )}
       </main>
 
       <ControlStrip />
 
-      {drawer && (
-        <aside className="drawer" aria-label={DRAWERS.find((d) => d.id === drawer)?.label}>
-          <div className="drawer-top">
-            <header className="drawer-head">
-              <nav className="drawer-tabs" aria-label="面板">
-                {DRAWERS.map((d) => (
-                  <button key={d.id} type="button" className={drawer === d.id ? 'is-on' : ''} onClick={() => setDrawer(d.id)}>
-                    {d.label}
-                  </button>
-                ))}
-              </nav>
-              <button type="button" className="btn btn--ghost" onClick={() => setDrawer(null)}>
-                收起
-              </button>
-            </header>
-            <LiveStrip />
-            <MentorStrip />
-          </div>
-          {drawer === 'build' && <BuildSheet />}
-          {drawer === 'ecu' && <EcuPanel />}
-          {drawer === 'dyno' && <DynoPanel />}
-        </aside>
-      )}
-
       {failure && <FailureReport failure={failure} />}
+      <AcceptanceDialog />
     </div>
+  );
+}
+
+export default function App(): React.ReactElement {
+  const started = useLink((s) => s.started);
+  const view = useUi((s) => s.view);
+  const help = useUi((s) => s.help);
+
+  useBenchInput(started && view === 'bench');
+
+  useEffect(() => {
+    if (started) startMentor();
+  }, [started]);
+
+  return (
+    <>
+      {view === 'home' && <StartScreen />}
+      {view === 'board' && <JobBoard />}
+      {view === 'bench' && (started ? <Bench /> : <div className="loading">正在接通台架…</div>)}
+      {help && <HelpOverlay />}
+    </>
   );
 }

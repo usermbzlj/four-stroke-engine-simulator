@@ -18,6 +18,7 @@ import { PARAM_NOTES } from './params';
 import { addDespair, dismissKey, say, sinceSaid, useMentor, type MentorAction } from './store';
 import { Stopped, tuneLambda, tuneSpark, type Sample, type TunerPort } from './tuner';
 import * as V from './voice';
+import { useGame } from '../game/store';
 
 const TICK_MS = 250;
 const SETTLE_S = 1.2;
@@ -123,6 +124,7 @@ const w = {
   tuneEnded: 0,
   prevSweeping: false,
   lastCoolant: 0,
+  lastOverrun: -10,
   seenRunning: false,
 };
 
@@ -450,7 +452,8 @@ function watchEngine(t: number, dt: number): void {
   w.misfires = w.misfires.filter((m) => t - m.t < 3);
   const lean = w.misfires.filter((m) => m.reason === 'lean').length;
   const rich = w.misfires.filter((m) => m.reason === 'rich').length;
-  if (s.limiterCut || t - (w.limiterHits[0] ?? 0) < 1.2) {
+  if (s.overrunCut) w.lastOverrun = t;
+  if (s.limiterCut || s.overrunCut || t - (w.limiterHits[0] ?? 0) < 1.2 || t - w.lastOverrun < 1.5 || throttle < 0.03) {
     /* overrun/limiter misfires are not a mixture problem */
   } else if (lean >= 4) {
     const wot = throttle > 0.85;
@@ -800,9 +803,11 @@ export function startMentor(): void {
   const m = useMentor.getState();
   const visits = m.visits + 1;
   m.set({ visits, messages: [] });
-  if (visits === 1) {
+  if (visits === 1 && useGame.getState().mode === 'sandbox') {
     say('hello', 'say', V.pick(V.GREET));
     startLesson();
+  } else if (visits === 1) {
+    say('hello', 'say', V.pick(V.GREET), { actions: [{ label: '先教我怎么开', run: startLesson, primary: true }] });
   } else {
     say('hello', 'say', V.pick(V.GREET_BACK), {
       actions: m.graduated ? [] : [{ label: '带我入门', run: startLesson, primary: true }],

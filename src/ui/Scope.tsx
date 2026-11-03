@@ -49,7 +49,9 @@ export function Scope(): React.ReactElement {
             </p>
           )}
         </header>
-        <canvas ref={refA} className="scope-canvas" />
+        <div className="scope-box">
+          <canvas ref={refA} className="scope-canvas" />
+        </div>
       </div>
       <div className="scope-pane">
         <header className="scope-head">
@@ -60,7 +62,9 @@ export function Scope(): React.ReactElement {
             </p>
           )}
         </header>
-        <canvas ref={refV} className="scope-canvas" />
+        <div className="scope-box">
+          <canvas ref={refV} className="scope-canvas" />
+        </div>
       </div>
     </section>
   );

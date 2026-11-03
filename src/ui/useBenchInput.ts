@@ -2,6 +2,12 @@ import { useEffect } from 'react';
 import { useControls } from '../state/controlStore';
 import { restoreEngine } from '../state/engineLink';
 import { useLive } from '../state/liveStore';
+import { useUi, type Drawer } from '../state/uiStore';
+
+const DRAWER_KEYS: Record<string, Drawer> = { q: 'build', w: 'ecu', e: 'dyno' };
+
+/** A dialog owns the keyboard while it is open. */
+const modalOpen = (): boolean => document.querySelector('.modal, .failure') !== null;
 
 const isTyping = (t: EventTarget | null): boolean => {
   if (!(t instanceof HTMLElement)) return false;
@@ -40,6 +46,25 @@ export function useBenchInput(enabled: boolean): void {
     const down = (e: KeyboardEvent): void => {
       if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
       const key = e.key.toLowerCase();
+      if (key === 'r' && !e.repeat && useLive.getState().snapshot?.failure) {
+        restoreEngine();
+        return;
+      }
+      if (modalOpen()) return;
+      const ui = useUi.getState();
+      if (key === '?' || (key === '/' && e.shiftKey)) {
+        ui.setHelp(true);
+        return;
+      }
+      if (key === 'escape' && ui.drawer) {
+        ui.setDrawer(null);
+        return;
+      }
+      if (!e.repeat && DRAWER_KEYS[key]) {
+        const d = DRAWER_KEYS[key];
+        ui.setDrawer(ui.drawer === d ? null : d);
+        return;
+      }
       if (key === ' ') {
         e.preventDefault();
         set({ pedal: 1 });
