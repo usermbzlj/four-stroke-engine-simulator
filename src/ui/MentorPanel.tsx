@@ -6,6 +6,22 @@ import { TITLES } from '../mentor/voice';
 
 const VISIBLE = 3;
 
+/** One-line echo of 老周's latest useful line, pinned under the live strip. */
+export function MentorStrip(): React.ReactElement | null {
+  const messages = useMentor((s) => s.messages);
+  const m = messages.find((x) => x.tone === 'danger') ?? messages.find((x) => x.tone === 'warn') ?? messages.find((x) => x.tone !== 'joke') ?? null;
+  if (!m) return null;
+  return (
+    <div className={`mentor-strip mentor-strip--${m.tone}`}>
+      <span className="mentor-face">周</span>
+      <p>
+        {m.head && <b>{m.head}</b>}
+        {m.text}
+      </p>
+    </div>
+  );
+}
+
 function Message({ m }: { m: MentorMessage }): React.ReactElement {
   return (
     <li className={`mentor-msg mentor-msg--${m.tone}`}>

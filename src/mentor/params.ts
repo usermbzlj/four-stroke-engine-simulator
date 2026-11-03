@@ -21,7 +21,7 @@ export const PARAM_NOTES: Record<string, ParamNote> = {
     watch: '连杆拉断转速。',
   },
   'config.compressionRatio': {
-    what: '压缩比是白捡的热效率，每加 1 大约多 3% 扭矩，但爆震边界跟着往回退。',
+    what: '压缩比是白捡的热效率。不爆震的转速每加 1 大约多 3–5%；低转贴着爆震线时，多出来的会被退角吃掉。',
     watch: '示波器上的峰值压力、爆震记录。高压缩要配高标号油。',
   },
   'config.intakeValves': {
@@ -41,7 +41,7 @@ export const PARAM_NOTES: Record<string, ParamNote> = {
     watch: '高转扭矩、排温。',
   },
   'config.intakeDuration': {
-    what: '进气持续角越长，高转越猛、低转越软、怠速越抖。这是凸轮最核心的一刀。',
+    what: '进气持续角加长，低转先软。高转能不能赚回来，要看断火够不够高、进气中心角跟没跟着推。',
     watch: '扭矩峰往哪个转速挪。按 B 把转速钉住再比，或者扫一条曲线。',
   },
   'config.exhaustDuration': {
@@ -73,8 +73,8 @@ export const PARAM_NOTES: Record<string, ParamNote> = {
     watch: '全油门时进气压力能不能接近 100 kPa。',
   },
   'config.intakeRunnerLength': {
-    what: '进气道里的气柱有惯性，长度决定它在哪个转速撞进缸里多灌一口：长偏低转，短偏高转。',
-    watch: '扭矩峰的位置，最直观是扫一条曲线对比。',
+    what: '进气道里的气柱有惯性。长度主要改六千以上和功率峰，扭矩峰不怎么挪。',
+    watch: '高转扭矩、功率峰。最直观是扫一条曲线对比。',
   },
   'config.intakeRunnerDiameter': {
     what: '进气道粗，流速慢、冲压弱；细了高转憋。',
@@ -114,19 +114,19 @@ export const PARAM_NOTES: Record<string, ParamNote> = {
   },
   'ecu.advanceOffset': {
     what: '点火早了，压力峰来得太早，在跟上行的活塞对着干，还容易爆震；晚了，压力峰太晚，热量全进了排气管。',
-    watch: '示波器：峰值落在上止点后 12–16° 最出力。按 B 钉住转速，看扭矩的变化。',
+    watch: '示波器：低转大约 14–16°，转速越高越靠前。别死盯一个数——按 B 钉住，前后各拧 2° 看扭矩。',
   },
   'ecu.knockControl': {
-    what: '爆震控制听到爆震就退点火角，是活塞的保险丝。关掉它才能找到真正的边界——也才能把活塞打穿。',
-    watch: '读数里的爆震退角。',
+    what: '爆震控制听到爆震就退点火角，是活塞的保险丝。这台低转本来就靠它兜着。关掉才能找边界——也才能把活塞打穿。',
+    watch: '读数里的爆震退角、活塞损伤。',
   },
   'ecu.cruiseLambda': {
     what: '部分负荷的混合比。1.0 最干净，太稀会失火，太浓会冒黑烟。',
     watch: '空燃比读数、失火记录。',
   },
   'ecu.wotLambda': {
-    what: '全油门的混合比。0.85–0.9 出力最大，也顺便给燃烧室降温；太稀烧得慢、排温高、容易爆震。',
-    watch: '扭矩、排温。',
+    what: '全油门的混合比。这台上 λ 0.75 到 1.0 出力差不多；再稀才掉劲。它不怎么抗爆。',
+    watch: '扭矩、失火记录。',
   },
   'ecu.limiterRpm': {
     what: '断火转速是最后一道闸，必须低于气门飘浮和连杆疲劳的转速。',

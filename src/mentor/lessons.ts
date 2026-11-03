@@ -79,7 +79,7 @@ export const LESSON: LessonStep[] = [
   {
     title: '读示波器',
     text: () =>
-      '看下方示波器。橙线是缸压，竖线是点火时刻。压力峰落在上止点后 12–16° 时这一下推得最狠；更早是在跟上行的活塞顶牛，更晚热量都进了排气管。',
+      '按 B 把转速钉住，看下方示波器。橙线是缸压，竖线是点火时刻。低转压力峰大约在上止点后 14–16°，转速越高越靠前。别死盯一个数：钉住以后，点火前后各拧 2°，看扭矩怎么变。',
     manual: '看懂了',
   },
   {
@@ -98,18 +98,37 @@ export const LESSON: LessonStep[] = [
       return m.changedRunId !== null && lastRunId() > m.changedRunId;
     },
     help: {
-      label: '帮我改短 200 mm',
+      label: '帮我改短 200 mm 并扫一条',
       run: () => {
         const c = useBench.getState().config;
         mentorEdit(() => useBench.getState().setConfig({ exhaustHeaderLength: c.exhaustHeaderLength - 200 }));
-        useUi.getState().setDrawer('build');
+        useUi.getState().setDrawer('dyno');
+        void (async () => {
+          if (await crankForMe()) startSweep();
+        })();
       },
     },
   },
   {
     title: '对比',
-    text: () =>
-      '两条曲线叠在一起了。扭矩峰往哪边挪了？短头段让排气负压波回来得更早，扫气最好的转速就往高处走。这就是调校：一次只动一个，测功机说了算。',
+    text: () => {
+      const runs = useBench.getState().runs;
+      const a = runs.at(-2);
+      const b = runs.at(-1);
+      if (!a || !b) {
+        return '两条曲线叠在一起了。扭矩峰往哪边挪了？短头段让排气负压波回来得更早，扫气最好的转速往往往高处走——但以测功机这两条为准。';
+      }
+      const peak = (pts: [number, number][]): { rpm: number; nm: number } => {
+        let best = { rpm: pts[0]?.[0] ?? 0, nm: pts[0]?.[1] ?? 0 };
+        for (const [rpm, nm] of pts) if (nm > best.nm) best = { rpm, nm };
+        return best;
+      };
+      const pa = peak(a.points);
+      const pb = peak(b.points);
+      const dir = pb.rpm > pa.rpm + 200 ? '往高转走了' : pb.rpm < pa.rpm - 200 ? '往低转走了' : '几乎没挪';
+      const dt = pb.nm - pa.nm;
+      return `两条曲线叠在一起了。扭矩峰从 ${Math.round(pa.rpm).toLocaleString('en-US')} rpm / ${pa.nm.toFixed(1)} Nm，到 ${Math.round(pb.rpm).toLocaleString('en-US')} / ${pb.nm.toFixed(1)} Nm，${dir}，峰值 ${dt >= 0 ? '+' : ''}${dt.toFixed(1)} Nm。一次只动一个，测功机说了算。`;
+    },
     manual: '毕业',
   },
 ];

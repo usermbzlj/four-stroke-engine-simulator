@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { startEngineHost, type EngineHost } from '../audio/host';
 import type { EngineMessage, HostCommand } from '../audio/protocol';
+import { useMentor } from '../mentor/store';
 import { blockChanged } from '../sim/config';
 import { useBench, type DynoRun } from './benchStore';
 import { effectiveThrottle, useControls } from './controlStore';
@@ -77,6 +78,7 @@ export function savePull(label?: string): DynoRun | null {
 }
 
 let sweepTimer = 0;
+let sweepGen = 0;
 let sweepLabel: string | undefined;
 let sweepDone: ((run: DynoRun | null) => void) | undefined;
 
@@ -88,6 +90,12 @@ export function startSweep(opts: { label?: string; onDone?: (run: DynoRun | null
     opts.onDone?.(null);
     return;
   }
+  if (sweepDone) {
+    const prev = sweepDone;
+    sweepDone = undefined;
+    prev(null);
+  }
+  const gen = ++sweepGen;
   sweepLabel = opts.label;
   sweepDone = opts.onDone;
   clearPull();
@@ -99,6 +107,7 @@ export function startSweep(opts: { label?: string; onDone?: (run: DynoRun | null
   recording = false;
   window.clearInterval(sweepTimer);
   sweepTimer = window.setInterval(() => {
+    if (gen !== sweepGen) return;
     const live = useLive.getState().snapshot;
     if (!live || live.status !== 'running' || !useControls.getState().sweeping) {
       stopSweep(false);
@@ -119,6 +128,7 @@ export function startSweep(opts: { label?: string; onDone?: (run: DynoRun | null
 }
 
 export function stopSweep(save: boolean): void {
+  sweepGen++;
   window.clearInterval(sweepTimer);
   recording = true;
   useControls.getState().set({ sweeping: false, brakeMode: 'off' });
@@ -149,11 +159,15 @@ function pushControls(): void {
       ignition: c.ignition,
       brakeMode: c.brakeMode,
       brakeRpm: c.brakeRpm,
+      protect: useMentor.getState().protect,
     },
   });
 }
 
 useControls.subscribe(pushControls);
+useMentor.subscribe((s, prev) => {
+  if (s.protect !== prev.protect) pushControls();
+});
 
 useBench.subscribe((s, prev) => {
   if (s.config !== prev.config) {

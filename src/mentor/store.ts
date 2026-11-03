@@ -95,6 +95,10 @@ export function dismiss(id: number): void {
   useMentor.setState({ messages: useMentor.getState().messages.filter((m) => m.id !== id) });
 }
 
+export function dismissKey(key: string): void {
+  useMentor.setState({ messages: useMentor.getState().messages.filter((m) => m.key !== key) });
+}
+
 /** Seconds since `key` last spoke, Infinity if never. */
 export function sinceSaid(key: string): number {
   const t = lastSaid.get(key);

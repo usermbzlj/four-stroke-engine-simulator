@@ -623,6 +623,14 @@ kbd {
   background: var(--panel);
   flex-wrap: wrap;
 }
+.controls.is-held {
+  box-shadow: inset 0 2px 0 var(--mentor);
+}
+.ctl-held {
+  color: var(--mentor);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
 .ctl {
   display: inline-flex;
   align-items: center;
@@ -1248,27 +1256,72 @@ kbd {
   border-color: var(--knock);
   animation: urgent 1s ease-in-out infinite alternate;
 }
+.mentor-strip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--faint);
+  background: var(--raised);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.mentor-strip .mentor-face {
+  width: 22px;
+  height: 22px;
+  font-size: 0.75rem;
+}
+.mentor-strip p {
+  margin: 0;
+}
+.mentor-strip p b {
+  margin-right: 4px;
+}
+.mentor-strip--danger {
+  border-color: var(--knock);
+  background: rgba(255, 61, 127, 0.1);
+}
+.mentor-strip--warn {
+  border-color: var(--heat);
+}
+.mentor-strip--good {
+  border-color: var(--good);
+}
 @container (max-width: 720px) {
+  .stage-engine:has(> .mentor) {
+    display: flex;
+    flex-direction: column;
+  }
   .stage-engine:has(> .mentor) .engine-view {
+    position: relative;
+    inset: auto;
+    flex: 1;
     left: 0;
+    min-height: 0;
   }
   .mentor {
-    width: min(270px, calc(100% - 24px));
-    max-height: 70%;
+    position: relative;
+    top: auto;
+    left: auto;
+    width: 100%;
+    max-height: 42%;
     gap: 6px;
     padding: 8px 10px 10px;
     font-size: 0.85rem;
     background: rgba(27, 31, 34, 0.94);
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
   }
   .mentor-face {
     width: 28px;
     height: 28px;
     font-size: 0.9rem;
   }
-  .mentor-id span {
-    display: none;
-  }
-  .mentor-msgs:not(.is-all) > li:nth-child(n + 2) {
+  .mentor-msgs:not(.is-all) > li:nth-child(n + 3) {
     display: none;
   }
 }

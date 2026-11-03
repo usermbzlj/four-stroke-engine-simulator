@@ -7,7 +7,9 @@
 import {
   meanPistonSpeed,
   overlapDeg,
+  ROD_FATIGUE_SPEED,
   rodBreakRpm,
+  safeLimiterRpm,
   valveFloatRpm,
   type BenchConfig,
   type EcuConfig,
@@ -33,19 +35,13 @@ export interface Issue {
   fixes: Fix[];
 }
 
-/** Force ratio above which every rev adds rod fatigue, expressed as a speed ratio. */
-export const ROD_FATIGUE_SPEED = Math.sqrt(0.8);
-/** Margin kept under fatigue onset and valve float when picking a limiter. */
-const ROD_MARGIN = 0.98;
-const FLOAT_MARGIN = 0.97;
-
 const down100 = (v: number): number => Math.floor(v / 100) * 100;
 const up = (v: number, step: number): number => Math.ceil(v / step) * step;
 const fmt = (rpm: number): string => Math.round(rpm).toLocaleString('en-US');
 
 /** Highest limiter that neither floats the valves nor tires the rod. */
 export function safeLimiter(c: EngineConfig): number {
-  return down100(Math.min(valveFloatRpm(c) * FLOAT_MARGIN, rodBreakRpm(c) * ROD_FATIGUE_SPEED * ROD_MARGIN));
+  return down100(safeLimiterRpm(c));
 }
 
 /** Seconds a fresh rod survives held at `rpm`, from the solver's fatigue law. */
@@ -63,7 +59,7 @@ export function springFor(c: EngineConfig, rpm: number): number {
 
 /** Rod strength that keeps `rpm` under fatigue onset. Break speed goes with √strength. */
 export function rodStrengthFor(c: EngineConfig, rpm: number): number {
-  return up(c.rodStrength * Math.pow(rpm / (rodBreakRpm(c) * ROD_FATIGUE_SPEED * ROD_MARGIN), 2), 100);
+  return up(c.rodStrength * Math.pow(rpm / (rodBreakRpm(c) * ROD_FATIGUE_SPEED * 0.98), 2), 100);
 }
 
 function limiterFixes(c: EngineConfig, e: EcuConfig, kind: 'rod' | 'float'): Fix[] {
@@ -128,14 +124,14 @@ export function assessBuild(c: EngineConfig, e: EcuConfig, b: BenchConfig, base:
     });
   }
 
-  if (e.wotLambda > 1.0) {
+  if (e.wotLambda > 1.05) {
     out.push({
       id: 'wot-lean',
       level: 'warn',
-      text: `全油门 λ ${e.wotLambda.toFixed(2)} 偏稀：烧得慢、排温高、更容易爆震，扭矩还更少。全油门要稍浓。`,
+      text: `全油门 λ ${e.wotLambda.toFixed(2)} 偏稀。这台上 λ 0.75 到 1.0 出力差不多，再稀就开始掉劲、失火。`,
       fixes: [{ label: '全油门 λ 改回 0.88', ecu: { wotLambda: 0.88 } }],
     });
-  } else if (e.wotLambda < 0.8) {
+  } else if (e.wotLambda < 0.75) {
     out.push({
       id: 'wot-rich',
       level: 'info',
@@ -143,11 +139,11 @@ export function assessBuild(c: EngineConfig, e: EcuConfig, b: BenchConfig, base:
       fixes: [{ label: '全油门 λ 改回 0.88', ecu: { wotLambda: 0.88 } }],
     });
   }
-  if (e.cruiseLambda > 1.25) {
+  if (e.cruiseLambda > 1.3) {
     out.push({
       id: 'cruise-lean',
       level: 'warn',
-      text: `部分负荷 λ ${e.cruiseLambda.toFixed(2)}，稀到点不着了，会一阵一阵地失火。`,
+      text: `部分负荷 λ ${e.cruiseLambda.toFixed(2)}，稀到快点不着了，会一阵一阵地失火。`,
       fixes: [{ label: '部分负荷 λ 改回 1.00', ecu: { cruiseLambda: 1 } }],
     });
   } else if (e.cruiseLambda < 0.85) {
@@ -183,8 +179,8 @@ export function assessBuild(c: EngineConfig, e: EcuConfig, b: BenchConfig, base:
   } else if (!e.knockControl) {
     out.push({
       id: 'knock-off',
-      level: 'info',
-      text: '爆震控制关了，保险丝已经拔掉。想找爆震边界可以，但要盯着活塞损伤。',
+      level: 'warn',
+      text: '爆震控制关了。这台低转本来就靠它兜着，全油门低转活塞撑不了多久，劲还更少。',
       fixes: [{ label: '打开爆震控制', ecu: { knockControl: true } }],
     });
   }
@@ -244,7 +240,6 @@ export function reviewFailure(f: Failure, c: EngineConfig, e: EcuConfig, b: Benc
       const fixes: Fix[] = [{ label: '点火角退 4°', ecu: { advanceOffset: Math.max(-20, e.advanceOffset - 4) } }];
       if (!e.knockControl) fixes.unshift({ label: '打开爆震控制', ecu: { knockControl: true } });
       if (c.fuelOctane < 102) fixes.push({ label: `换 ${Math.min(102, c.fuelOctane + 3)} 号油`, config: { fuelOctane: Math.min(102, c.fuelOctane + 3) } });
-      if (e.wotLambda > 0.9) fixes.push({ label: '全油门 λ 加浓到 0.86', ecu: { wotLambda: 0.86 } });
       return {
         cause: `末端混合气在火焰到达之前自己炸了，压力波一下一下砸在活塞顶上。${e.knockControl ? '爆震控制开着都没压住，说明点火角、压缩比和油号的组合太激进。' : '爆震控制是关的，没人替它退角。'}`,
         fixes,

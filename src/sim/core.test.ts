@@ -67,6 +67,20 @@ describe('starting and idle', () => {
     expect(core.rpm).toBeLessThan(50);
     expect(core.status).toBe('off');
   });
+
+  it('stays running through a couple of misfires at speed', () => {
+    const core = startedEngine(preset('street-250'));
+    core.controls.brakeMode = 'speed';
+    core.controls.brakeRpm = 4000;
+    core.controls.throttle = 1;
+    run(core, 0.8);
+    core.setEcu({ ...preset('street-250').ecu, wotLambda: 1.6 });
+    const statuses = new Set<string>();
+    run(core, 0.4, () => statuses.add(core.status));
+    expect(statuses.has('off')).toBe(false);
+    expect(core.status).toBe('running');
+    expect(core.rpm).toBeGreaterThan(1000);
+  });
 });
 
 describe('performance', () => {
@@ -156,6 +170,22 @@ describe('failures', () => {
     core.controls.throttle = 1;
     run(core, 0.1);
     expect(core.failure?.kind).toBe('valve');
+  });
+
+  it('protect mode refuses to break the rod', () => {
+    const p = preset('street-250');
+    const weak = { ...p.engine, rodStrength: 6000 };
+    const core = new EngineCore(weak, { ...p.ecu, limiterRpm: 14000 });
+    const breakRpm = rodBreakRpm(weak);
+    core.omega = ((breakRpm + 300) * 2 * Math.PI) / 60;
+    core.controls.throttle = 1;
+    core.controls.protect = true;
+    const events: CoreEvent[] = [];
+    run(core, 0.15);
+    core.drainEvents(events);
+    expect(core.failure).toBeNull();
+    expect(core.status).not.toBe('broken');
+    expect(events.some((e) => e.kind === 'guard' && e.reason === 'rod')).toBe(true);
   });
 });
 

@@ -4,18 +4,18 @@
  * when something is about to break, and can take the dyno to calibrate.
  */
 
-import { BLOCK_KEYS, rodBreakRpm, valveFloatRpm, type BenchConfig, type EcuConfig, type EngineConfig } from '../sim/config';
+import { BLOCK_KEYS, ROD_FATIGUE_SPEED, rodBreakRpm, valveFloatRpm, type BenchConfig, type EcuConfig, type EngineConfig } from '../sim/config';
 import type { CoreEvent, Failure, FailureKind } from '../sim/core';
 import { basePreset, buildSig, useBench, type DynoRun } from '../state/benchStore';
 import { effectiveThrottle, useControls } from '../state/controlStore';
 import { restoreEngine, startSweep, stopSweep } from '../state/engineLink';
 import { onCoreEvents, useLive } from '../state/liveStore';
 import { useUi, type Focus } from '../state/uiStore';
-import { applyFix, crankForMe, isMentorEdit, mentorEdit, wait } from './actions';
+import { applyFix, clearHalt, crankForMe, haltActions, isHalted, isMentorEdit, mentorEdit, retardSpark, wait } from './actions';
 import { assessBuild, reviewFailure, safeLimiter, type Fix, type Issue } from './advice';
 import { freshMemory, LESSON, type LessonMemory } from './lessons';
 import { PARAM_NOTES } from './params';
-import { addDespair, say, sinceSaid, useMentor, type MentorAction } from './store';
+import { addDespair, dismissKey, say, sinceSaid, useMentor, type MentorAction } from './store';
 import { Stopped, tuneLambda, tuneSpark, type Sample, type TunerPort } from './tuner';
 import * as V from './voice';
 
@@ -29,8 +29,51 @@ const pct = (v: number): string => `${Math.round(v * 100)}%`;
 const now = (): number => performance.now() / 1000;
 
 export function fixAction(fix: Fix, primary = false): MentorAction {
-  return { label: fix.label, run: () => applyFix(fix), primary };
+  return {
+    label: fix.label,
+    primary,
+    run: () => applyFix(relive(fix)),
+  };
 }
+
+function issueActions(id: string): MentorAction[] {
+  const i = currentIssues().find((x) => x.id === id);
+  if (!i) return [];
+  return i.fixes.map((f, n) => ({
+    label: f.label,
+    primary: n === 0,
+    run: () => {
+      const fresh = currentIssues().find((x) => x.id === id);
+      if (fresh?.fixes[n]) applyFix(fresh.fixes[n]!);
+      else if (fresh?.fixes[0]) applyFix(fresh.fixes[0]);
+    },
+  }));
+}
+
+/** Recompute deltas like "点火退 4°" against the live ECU. */
+function relive(fix: Fix): Fix {
+  const ecu = useBench.getState().ecu;
+  if (!fix.ecu) return fix;
+  const next = { ...fix.ecu };
+  const mRetard = fix.label.match(/退\s*(\d+)/);
+  const mAdd = fix.label.match(/加\s*(\d+)/);
+  const mIdle = fix.label.match(/怠速\s*\+(\d+)/);
+  if (mRetard && next.advanceOffset !== undefined) next.advanceOffset = Math.max(-20, ecu.advanceOffset - Number(mRetard[1]));
+  else if (mAdd && next.advanceOffset !== undefined) next.advanceOffset = Math.min(20, ecu.advanceOffset + Number(mAdd[1]));
+  if (mIdle && next.idleRpm !== undefined) next.idleRpm = ecu.idleRpm + Number(mIdle[1]);
+  return { ...fix, ecu: next };
+}
+
+const NOT_TORQUE = new Set([
+  'config.flywheelInertia',
+  'config.radiatorCapacity',
+  'ecu.overrunFuelCut',
+  'ecu.limiterMode',
+  'ecu.idleRpm',
+  'ecu.limiterRpm',
+  'bench.coolantConditioner',
+  'bench.coolantSetpoint',
+]);
 
 function issueTone(i: Issue): 'danger' | 'warn' | 'say' {
   return i.level === 'danger' ? 'danger' : i.level === 'warn' ? 'warn' : 'say';
@@ -71,6 +114,16 @@ const w = {
   lastFocusParam: '',
   lesson: null as LessonMemory | null,
   lastFailure: null as Failure | null,
+  mentorSettling: false,
+  playerKeys: new Set<string>(),
+  holdUntilRelease: false,
+  lastRescue: new Map<FailureKind, number>(),
+  offSince: 0,
+  sweepEnded: 0,
+  tuneEnded: 0,
+  prevSweeping: false,
+  lastCoolant: 0,
+  seenRunning: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -80,35 +133,51 @@ const w = {
 function onBuildChange(prev: { config: EngineConfig; ecu: EcuConfig; bench: BenchConfig }): void {
   if (useMentor.getState().tuning) return;
   const s = useBench.getState();
-  if (!w.burstIssues) {
-    w.burstIssues = new Set(assessBuild(prev.config, prev.ecu, prev.bench, basePreset()).map((i) => i.id));
-  }
-  w.lastChange = now();
-  if (isMentorEdit()) return;
   const keys: string[] = [];
   for (const k of Object.keys(s.config) as (keyof EngineConfig)[]) if (s.config[k] !== prev.config[k]) keys.push(`config.${k}`);
   for (const k of Object.keys(s.ecu) as (keyof EcuConfig)[]) if (s.ecu[k] !== prev.ecu[k]) keys.push(`ecu.${k}`);
   for (const k of Object.keys(s.bench) as (keyof BenchConfig)[]) if (s.bench[k] !== prev.bench[k]) keys.push(`bench.${k}`);
+  if (isMentorEdit()) {
+    w.mentorSettling = true;
+    w.burstIssues = new Set(currentIssues().map((i) => i.id));
+    return;
+  }
+  w.mentorSettling = false;
+  if (!w.burstIssues) {
+    w.burstIssues = new Set(assessBuild(prev.config, prev.ecu, prev.bench, basePreset()).map((i) => i.id));
+  }
+  w.lastChange = now();
+  if (keys.length >= 8) {
+    w.changes = [];
+    return;
+  }
   const t = now();
-  for (const key of keys) w.changes.push({ t, key });
+  for (const key of keys) {
+    w.changes.push({ t, key });
+    w.playerKeys.add(key);
+  }
 }
 
 function settleBuild(t: number): void {
   if (!w.burstIssues || t - w.lastChange < SETTLE_S) return;
   const before = w.burstIssues;
   w.burstIssues = null;
+  if (w.mentorSettling) {
+    w.mentorSettling = false;
+    return;
+  }
   const issues = currentIssues();
   const fresh = issues.filter((i) => !before.has(i.id));
   for (const i of fresh.sort((a, b) => rank(b) - rank(a))) {
     say(`issue:${i.id}`, issueTone(i), i.text, {
-      actions: i.fixes.map((f, n) => fixAction(f, n === 0)),
+      actions: issueActions(i.id),
       ...(i.level === 'danger' ? { head: '认真的。' } : {}),
     });
     if (i.id.startsWith('rod')) w.warned.set('rod', t);
     if (i.id.startsWith('float')) w.warned.set('valve', t);
   }
   const fixed = [...before].filter((id) => !issues.some((i) => i.id === id) && (id.startsWith('rod') || id.startsWith('float') || id === 'knock-hot'));
-  if (fixed.length > 0 && fresh.length === 0) say('fixed', 'good', '这下安全了。看，也没那么难。', { cooldown: 5 });
+  if (fixed.length > 0 && fresh.length === 0) say('fixed', 'good', '这下安全了。', { cooldown: 5 });
 }
 
 const rank = (i: Issue): number => (i.level === 'danger' ? 2 : i.level === 'warn' ? 1 : 0);
@@ -140,17 +209,31 @@ function explainFocus(focus: Focus | null): void {
 function judgeResult(t: number): void {
   const focus = useUi.getState().focus;
   if (!focus?.before || w.resultFor === focus || t - w.lastChange < RESULT_S || w.lastChange * 1000 < focus.at - 50) return;
-  if (useMentor.getState().tuning) return;
+  if (useMentor.getState().tuning || w.mentorSettling) return;
+  if (NOT_TORQUE.has(focus.param)) {
+    w.resultFor = focus;
+    return;
+  }
   const live = useLive.getState();
   const m = live.metrics;
   const braked = useControls.getState().brakeMode === 'speed';
-  if (!m || !braked || !focus.beforeBrake) return;
+  if (!braked || !focus.beforeBrake) {
+    if (t - w.lastChange >= RESULT_S) {
+      say('pin', 'say', '按 B 把转速钉住再比，不然这是油门的功劳。', { cooldown: 40 });
+      w.resultFor = focus;
+    }
+    return;
+  }
+  if (!m) return;
   if (Math.abs(m.rpm - focus.before.rpm) > 150 || Math.abs((live.snapshot?.throttle ?? 0) - focus.beforeThrottle) > 0.05) return;
   w.resultFor = focus;
   const before = focus.before.brakeTorque;
   if (before < 1) return;
   const d = m.brakeTorque / before - 1;
-  if (Math.abs(d) < 0.02) return;
+  if (Math.abs(d) < 0.01) {
+    say('result', 'say', `${focus.label}这一下 ${d >= 0 ? '+' : ''}${(d * 100).toFixed(1)}%，在噪声里。这一刀等于没切。`, { cooldown: 20 });
+    return;
+  }
   const text = `${focus.label}这一下，在 ${fmtRpm(m.rpm)} rpm 扭矩 ${before.toFixed(1)} → ${m.brakeTorque.toFixed(1)} Nm（${d > 0 ? '+' : ''}${(d * 100).toFixed(1)}%）。`;
   if (d > 0) {
     say('result', 'good', `${text}${V.pick(V.PRAISE)}`);
@@ -174,15 +257,16 @@ function undo(f: Focus): void {
 // ---------------------------------------------------------------------------
 
 function rescue(kind: FailureKind, text: string, fix?: Fix): void {
+  const t = now();
+  if (t - (w.lastRescue.get(kind) ?? 0) < 10) return;
+  w.lastRescue.set(kind, t);
   useControls.getState().set({ autoThrottle: 0 });
-  w.rescueUntil = now() + 1.5;
+  w.rescueUntil = t + 1.5;
+  w.holdUntilRelease = true;
   if (fix) applyFix(fix);
   if (useMentor.getState().tuning) stopTune('保护模式');
-  w.warned.set(kind, now());
-  say('rescue', 'danger', text, {
-    head: '我接手了。',
-    actions: [{ label: '关掉保护模式', run: () => useMentor.getState().set({ protect: false }) }],
-  });
+  w.warned.set(kind, t);
+  say('rescue', 'danger', text, { head: '我接手了。' });
 }
 
 function watchEngine(t: number, dt: number): void {
@@ -194,7 +278,18 @@ function watchEngine(t: number, dt: number): void {
   const protect = useMentor.getState().protect;
   const tuning = useMentor.getState().tuning !== null;
 
-  if (w.rescueUntil > 0 && t > w.rescueUntil && !tuning) {
+  if (ctl.sweeping !== w.prevSweeping) {
+    if (w.prevSweeping && !ctl.sweeping) w.sweepEnded = t;
+    w.prevSweeping = ctl.sweeping;
+  }
+
+  if (w.holdUntilRelease) {
+    if (ctl.pedal < 0.05 && ctl.hand < 0.03 && !ctl.sweeping) {
+      w.holdUntilRelease = false;
+      w.rescueUntil = 0;
+      useControls.getState().set({ autoThrottle: null });
+    }
+  } else if (w.rescueUntil > 0 && t > w.rescueUntil && !tuning) {
     w.rescueUntil = 0;
     useControls.getState().set({ autoThrottle: null });
   }
@@ -208,14 +303,29 @@ function watchEngine(t: number, dt: number): void {
         actions: [{ label: '打开点火', run: () => useControls.getState().set({ ignition: true }), primary: true }],
       });
     } else if (t - w.crankSince > 3.5 && !tuning) {
-      const lean = ecu.cruiseLambda > 1.25;
-      say('crank', 'warn', `拖了 ${Math.round(t - w.crankSince)} 秒还不着。${lean ? '部分负荷 λ 太稀，冷机根本点不着。' : '松开歇一下，起动机也是要喘气的。'}`, {
+      say('crank', 'warn', `拖了 ${Math.round(t - w.crankSince)} 秒还不着。松开歇一下，起动机也是要喘气的。`, {
         cooldown: 20,
-        actions: lean ? [fixAction({ label: 'λ 改回 1.00', ecu: { cruiseLambda: 1 } }, true)] : [{ label: '我来起动', run: () => void crankForMe() }],
+        actions: [{ label: '我来起动', run: () => void crankForMe() }],
       });
     }
   }
-  if (w.prevStatus === 'running' && s.status === 'off' && ctl.ignition && !s.failure && !tuning) {
+  if (s.status === 'off') {
+    if (w.offSince === 0) w.offSince = t;
+  } else {
+    w.offSince = 0;
+  }
+  const quietAfterAuto = t - w.sweepEnded < 3 || t - w.tuneEnded < 3 || w.holdUntilRelease;
+  if (
+    s.status === 'off' &&
+    w.seenRunning &&
+    ctl.ignition &&
+    !s.failure &&
+    !tuning &&
+    !quietAfterAuto &&
+    w.offSince > 0 &&
+    t - w.offSince >= 0.6 &&
+    s.rpm < 400
+  ) {
     const stall = currentIssues().find((i) => i.id === 'idle-stall');
     say('stall', 'warn', `${V.pick(V.STALL)}${stall ? ` ${stall.text}` : ''}`, {
       cooldown: 15,
@@ -226,6 +336,7 @@ function watchEngine(t: number, dt: number): void {
     });
   }
   if (s.status === 'running' && w.prevStatus !== 'running') w.runningSince = t;
+  if (s.status === 'running') w.seenRunning = true;
   w.prevStatus = s.status;
   if (s.status !== 'running') {
     w.damage = s.pistonDamage;
@@ -238,11 +349,11 @@ function watchEngine(t: number, dt: number): void {
   const knocking = w.knocks.some((k) => k.i > 0.08);
   const damageRate = (s.pistonDamage - w.damage) / dt;
   w.damage = s.pistonDamage;
-  if (knocking && damageRate > 0.002) {
-    if (protect && s.pistonDamage > 0.3) {
+  if (knocking && damageRate > 0.002 && !tuning) {
+    if (protect && s.pistonDamage > 0.12) {
       rescue(
         'piston',
-        `活塞损伤 ${pct(s.pistonDamage)}，还在爆震。我收了油门，点火角退了 4°，把爆震控制打开了。想看它打穿，先关掉保护模式。`,
+        `活塞损伤 ${pct(s.pistonDamage)}，还在爆震。我收了油门，点火角退了 4°，把爆震控制打开了。`,
         { label: '', ecu: { advanceOffset: Math.max(-20, ecu.advanceOffset - 4), knockControl: true } },
       );
     } else if (s.pistonDamage > 0.08) {
@@ -251,20 +362,28 @@ function watchEngine(t: number, dt: number): void {
         head: '认真的。',
         cooldown: 6,
         actions: [
-          fixAction({ label: '点火退 4°', ecu: { advanceOffset: Math.max(-20, ecu.advanceOffset - 4) } }, true),
+          { label: '点火退 4°', primary: true, run: () => retardSpark(4) },
           ...(ecu.knockControl ? [] : [fixAction({ label: '打开爆震控制', ecu: { knockControl: true } })]),
         ],
       });
     }
   }
   if (ecu.knockControl && s.knockRetard > 6 && !tuning) {
-    say('retard', 'warn', `ECU 已经退了 ${s.knockRetard.toFixed(1)}° 点火角在压爆震。你加的那点提前角，全被它收回去了，还白挨了几下爆震。`, {
-      cooldown: 40,
-      actions: [
-        fixAction({ label: '点火修正 −3°', ecu: { advanceOffset: Math.max(-20, ecu.advanceOffset - 3) } }, true),
-        ...(config.fuelOctane < 102 ? [fixAction({ label: `换 ${Math.min(102, config.fuelOctane + 3)} 号油`, config: { fuelOctane: Math.min(102, config.fuelOctane + 3) } })] : []),
-      ],
-    });
+    const added = w.playerKeys.has('ecu.advanceOffset');
+    say(
+      'retard',
+      'warn',
+      added
+        ? `ECU 已经退了 ${s.knockRetard.toFixed(1)}°。你加的提前角，全被它收回去了。`
+        : `出厂点火图在低转本来就贴着爆震线，ECU 已经退了 ${s.knockRetard.toFixed(1)}° 在兜底。正常。要这段的劲，换高标号油。`,
+      {
+        cooldown: 40,
+        actions: [
+          ...(added ? [{ label: '点火修正 −3°', primary: true, run: () => retardSpark(3) }] : []),
+          ...(config.fuelOctane < 102 ? [fixAction({ label: `换 ${Math.min(102, config.fuelOctane + 3)} 号油`, config: { fuelOctane: Math.min(102, config.fuelOctane + 3) } })] : []),
+        ],
+      },
+    );
   }
 
   // ---- rod and valves ----
@@ -285,7 +404,8 @@ function watchEngine(t: number, dt: number): void {
     });
   }
   if (protect && s.rpm > float * 1.08) {
-    rescue('valve', `${fmtRpm(s.rpm)} rpm，比气门飘浮转速高了 ${pct(s.rpm / float - 1)}，再高 7% 气门就撞活塞。我收了油门，断火降到 ${fmtRpm(safe)}。`, limiterFix);
+    const gap = Math.max(0, float * 1.15 - s.rpm);
+    rescue('valve', `${fmtRpm(s.rpm)} rpm，比气门飘浮转速高了 ${pct(s.rpm / float - 1)}，再 ${fmtRpm(gap)} 转气门就撞活塞。我收了油门，断火降到 ${fmtRpm(safe)}。`, limiterFix);
   } else if (s.rpm > float) {
     w.warned.set('valve', t);
     say('float', 'danger', `${fmtRpm(s.rpm)} rpm，气门已经在飘：弹簧压不住，关得越来越晚。超过 ${fmtRpm(float * 1.15)} 它会被活塞顶弯。`, {
@@ -302,12 +422,22 @@ function watchEngine(t: number, dt: number): void {
       rescue('headGasket', `水温 ${s.coolantC.toFixed(0)} °C，离缸垫冲坏只剩 ${(135 - s.coolantC).toFixed(0)} 度。我收了油门，把水温机接上了。`, fix);
     } else {
       w.warned.set('headGasket', t);
-      say('hot', s.coolantC > 122 ? 'danger' : 'warn', `水温 ${s.coolantC.toFixed(0)} °C 还在爬。135 °C 缸垫就冲了。`, {
-        cooldown: 15,
-        actions: [fixAction(fix, true), fixAction({ label: `散热器换 ${Math.min(2, config.radiatorCapacity + 0.5).toFixed(1)}×`, config: { radiatorCapacity: Math.min(2, config.radiatorCapacity + 0.5) } })],
-      });
+      const rising = s.coolantC > w.lastCoolant + 0.15;
+      say(
+        'hot',
+        s.coolantC > 122 ? 'danger' : 'warn',
+        rising
+          ? `水温 ${s.coolantC.toFixed(0)} °C 还在爬。135 °C 缸垫就冲了。`
+          : `水温 ${s.coolantC.toFixed(0)} °C，稳住了，离 135 还差 ${(135 - s.coolantC).toFixed(0)} 度。`,
+        {
+          cooldown: 25,
+          actions: [fixAction(fix, true), fixAction({ label: `散热器换 ${Math.min(2, config.radiatorCapacity + 0.5).toFixed(1)}×`, config: { radiatorCapacity: Math.min(2, config.radiatorCapacity + 0.5) } })],
+        },
+      );
     }
   }
+
+  w.lastCoolant = s.coolantC;
 
   if (tuning) return;
   const throttle = effectiveThrottle(ctl);
@@ -320,7 +450,9 @@ function watchEngine(t: number, dt: number): void {
   w.misfires = w.misfires.filter((m) => t - m.t < 3);
   const lean = w.misfires.filter((m) => m.reason === 'lean').length;
   const rich = w.misfires.filter((m) => m.reason === 'rich').length;
-  if (lean >= 4) {
+  if (s.limiterCut || t - (w.limiterHits[0] ?? 0) < 1.2) {
+    /* overrun/limiter misfires are not a mixture problem */
+  } else if (lean >= 4) {
     const wot = throttle > 0.85;
     say('misfire', 'warn', `一直在失火，混合气太稀，火花点不着。${wot ? '全油门' : '部分负荷'} λ 现在是 ${(wot ? ecu.wotLambda : ecu.cruiseLambda).toFixed(2)}。`, {
       cooldown: 20,
@@ -338,15 +470,17 @@ function watchEngine(t: number, dt: number): void {
   const braked = ctl.brakeMode === 'speed';
   w.steadyWot = braked && throttle > 0.9 && c && !c.misfire && c.knock < 0.08 ? w.steadyWot + dt : 0;
   if (w.steadyWot > 2.5 && c && t - w.lastChange > 3) {
-    if (c.pmaxDeg < 8) {
+    if (s.knockRetard > 2 && c.pmaxDeg > 20) {
+      /* late peak is the ECU retarding; the retard card already covers it */
+    } else if (c.pmaxDeg < 8 && s.rpm < 6000) {
       say('pmax', 'say', `示波器上峰值压力在上止点后 ${c.pmaxDeg.toFixed(0)}°，来得太早了，活塞还没下行就被压着。点火可以退一点，扭矩反而会涨。`, {
         cooldown: 60,
-        actions: [fixAction({ label: '点火退 3°', ecu: { advanceOffset: Math.max(-20, ecu.advanceOffset - 3) } })],
+        actions: [{ label: '点火退 3°', run: () => retardSpark(3) }],
       });
-    } else if (c.pmaxDeg > 20) {
+    } else if (c.pmaxDeg > 20 && s.knockRetard < 1) {
       say('pmax', 'say', `峰值压力在上止点后 ${c.pmaxDeg.toFixed(0)}°，来得太晚，热量都送进排气管了（排温 ${s.egtC.toFixed(0)} °C）。点火能再早一点——盯着爆震。`, {
         cooldown: 60,
-        actions: [fixAction({ label: '点火加 3°', ecu: { advanceOffset: Math.min(20, ecu.advanceOffset + 3) } })],
+        actions: [{ label: '点火加 3°', run: () => retardSpark(-3) }],
       });
     }
   }
@@ -408,6 +542,18 @@ function onEvents(events: CoreEvent[]): void {
       case 'failure':
         onFailure(e.failure);
         break;
+      case 'guard': {
+        if (useMentor.getState().tuning) stopTune('保护模式');
+        const kind = e.reason === 'piston' ? 'piston' : e.reason === 'valve' ? 'valve' : 'rod';
+        const text =
+          e.reason === 'piston'
+            ? `活塞损伤到头了。我压住了。`
+            : e.reason === 'valve'
+              ? `${fmtRpm(e.rpm)} rpm，气门马上要撞活塞。我压住了。`
+              : `${fmtRpm(e.rpm)} rpm，连杆到极限了。我压住了。`;
+        rescue(kind, text);
+        break;
+      }
       default:
         break;
     }
@@ -422,7 +568,7 @@ function onFailure(f: Failure): void {
   const failures = m.failures + 1;
   m.set({ failures });
   const warnedAt = w.warned.get(f.kind);
-  const ignored = warnedAt !== undefined && now() - warnedAt < 90;
+  const ignored = warnedAt !== undefined && now() - warnedAt >= 3 && now() - warnedAt < 90;
   addDespair(ignored ? 1.2 : 0.8);
   const { config, ecu, bench } = useBench.getState();
   const review = reviewFailure(f, config, ecu, bench);
@@ -433,14 +579,18 @@ function onFailure(f: Failure): void {
         label: '按老周说的改，换新零件',
         primary: true,
         run: () => {
-          for (const fix of review.fixes) applyFix(fix);
+          const liveF = useLive.getState().snapshot?.failure;
+          if (!liveF) return;
+          const s = useBench.getState();
+          for (const fix of reviewFailure(liveF, s.config, s.ecu, s.bench).fixes) applyFix(fix);
           restoreEngine();
         },
       },
     ],
   });
   const tail = ignored ? V.pick(V.IGNORED) : '';
-  say('failure-tail', 'joke', `${tail}${tail ? ' ' : ''}${V.byDespair(V.FAIL_TAIL, Math.min(failures - 1, 4))}`);
+  const despair = useMentor.getState().despair;
+  say('failure-tail', 'joke', `${tail}${tail ? ' ' : ''}${V.byDespair(V.FAIL_TAIL, Math.min(Math.floor(despair), 4))}`);
 }
 
 /** Fixes the failure review proposes, for the teardown card. */
@@ -458,6 +608,11 @@ export function onRestored(): void {
   w.lastFailure = null;
   w.damage = 0;
   w.fatigue = 0;
+  w.holdUntilRelease = false;
+  w.seenRunning = false;
+  dismissKey('failure');
+  dismissKey('failure-tail');
+  dismissKey('rescue');
   say('revive', 'say', V.pick(V.REVIVE));
 }
 
@@ -537,7 +692,7 @@ const livePort: TunerPort = {
     unsub();
     return { torque: cycles ? torque / cycles : 0, knock, cycles };
   },
-  stopped: () => cancelReason !== null || useLive.getState().snapshot?.status !== 'running',
+  stopped: () => cancelReason !== null || isHalted() || useLive.getState().snapshot?.status !== 'running',
 };
 
 function sweep(label: string): Promise<DynoRun | null> {
@@ -558,6 +713,7 @@ function peaks(run: DynoRun): { tq: number; hp: number } {
 export function stopTune(reason = '你喊停'): void {
   if (!useMentor.getState().tuning) return;
   cancelReason = reason;
+  haltActions();
   if (useControls.getState().sweeping) stopSweep(false);
 }
 
@@ -569,16 +725,17 @@ export async function autoTune(): Promise<void> {
     return;
   }
   cancelReason = null;
+  clearHalt();
   m.set({ tuning: { stage: '准备', log: [] }, open: true });
   useUi.getState().setDrawer('dyno');
   const fmtOff = (v: number): string => `${v > 0 ? '+' : ''}${v}°`;
   try {
     say('tune', 'say', '我来。你看着，手别碰油门。');
-    if (!(await crankForMe())) throw new Stopped();
+    if (!(await crankForMe()) || cancelReason) throw new Stopped();
 
     const { config, ecu } = useBench.getState();
     const safe = safeLimiter(config);
-    if (ecu.limiterRpm > safe) {
+    if (ecu.limiterRpm > valveFloatRpm(config) || ecu.limiterRpm > rodBreakRpm(config) * ROD_FATIGUE_SPEED) {
       livePort.setEcu({ limiterRpm: safe });
       tuneLog(`断火转速 ${fmtRpm(ecu.limiterRpm)} 超出零件的安全线，先降到 ${fmtRpm(safe)}。`);
     }
@@ -627,6 +784,7 @@ export async function autoTune(): Promise<void> {
     useControls.getState().set({ autoThrottle: null, brakeMode: 'off', hand: 0 });
     useMentor.getState().set({ tuning: null });
     cancelReason = null;
+    w.tuneEnded = now();
   }
 }
 
@@ -651,7 +809,7 @@ export function startMentor(): void {
     });
   }
   const issues = currentIssues().filter((i) => i.level !== 'info');
-  for (const i of issues) say(`issue:${i.id}`, issueTone(i), i.text, { actions: i.fixes.map((f, n) => fixAction(f, n === 0)) });
+  for (const i of issues) say(`issue:${i.id}`, issueTone(i), i.text, { actions: issueActions(i.id) });
 
   useBench.subscribe((s, prev) => {
     if (s.config !== prev.config || s.ecu !== prev.ecu || s.bench !== prev.bench) onBuildChange(prev);

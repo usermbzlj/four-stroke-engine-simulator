@@ -1,3 +1,5 @@
+import { safeLimiter } from '../mentor/advice';
+import { useMentor } from '../mentor/store';
 import { DEFAULT_BENCH, DEFAULT_PRESET, PRESETS } from '../sim/config';
 import { useBench } from '../state/benchStore';
 import { Choice, Slider } from './fields';
@@ -14,6 +16,9 @@ export function EcuPanel(): React.ReactElement {
   const setEcu = useBench((s) => s.setEcu);
   const setBench = useBench((s) => s.setBench);
   const factory = (PRESETS.find((p) => p.id === baseId) ?? DEFAULT_PRESET).ecu;
+  const protect = useMentor((s) => s.protect);
+  const config = useBench((s) => s.config);
+  const guard = safeLimiter(config);
 
   return (
     <div className="sheet">
@@ -90,6 +95,7 @@ export function EcuPanel(): React.ReactElement {
           max={16000}
           step={100}
           unit="rpm"
+          hint={protect && ecu.limiterRpm > guard ? `保护开着：老周把实际断火压在 ${guard.toLocaleString('en-US')}。关掉保护才能顶上去。` : undefined}
           onChange={(v) => setEcu({ limiterRpm: v })}
         />
         <Choice

@@ -3,8 +3,13 @@ import { useControls } from '../state/controlStore';
 import { restoreEngine } from '../state/engineLink';
 import { useLive } from '../state/liveStore';
 
-const isTyping = (t: EventTarget | null): boolean =>
-  t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA');
+const isTyping = (t: EventTarget | null): boolean => {
+  if (!(t instanceof HTMLElement)) return false;
+  if (t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') return true;
+  if (t.tagName !== 'INPUT') return false;
+  const type = (t as HTMLInputElement).type;
+  return type !== 'range' && type !== 'button' && type !== 'checkbox';
+};
 
 export function toggleBrake(): void {
   const c = useControls.getState();

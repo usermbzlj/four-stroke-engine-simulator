@@ -4,10 +4,11 @@ import { nudgeBrake, toggleBrake } from './useBenchInput';
 export function ControlStrip(): React.ReactElement {
   const c = useControls();
   const throttle = effectiveThrottle(c);
+  const held = c.autoThrottle !== null;
   const hold = (on: boolean) => () => c.set({ starter: on });
 
   return (
-    <div className="controls" role="group" aria-label="台架操作">
+    <div className={`controls${held ? ' is-held' : ''}`} role="group" aria-label="台架操作">
       <button
         type="button"
         className={`ctl ctl--starter${c.starter ? ' is-on' : ''}`}
@@ -30,9 +31,13 @@ export function ControlStrip(): React.ReactElement {
       <label className="ctl-throttle">
         <span className="ctl-throttle-label">
           油门 <b>{Math.round(throttle * 100)}%</b>
-          <span className="ctl-hint">
-            <kbd>空格</kbd> 全开 <kbd>↑↓</kbd> <kbd>0–9</kbd> 手油门
-          </span>
+          {held ? (
+            <span className="ctl-held">老周握着油门</span>
+          ) : (
+            <span className="ctl-hint">
+              <kbd>空格</kbd> 全开 <kbd>↑↓</kbd> <kbd>0–9</kbd> 手油门
+            </span>
+          )}
         </span>
         <span className="ctl-throttle-track">
           <span className="ctl-throttle-fill" style={{ width: `${throttle * 100}%` }} />

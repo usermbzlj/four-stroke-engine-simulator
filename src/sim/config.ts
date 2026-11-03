@@ -319,6 +319,14 @@ export function rodBreakRpm(c: EngineConfig): number {
   return (omega * 60) / (2 * Math.PI);
 }
 
+/** Force ratio above which every rev adds rod fatigue, as a speed ratio. */
+export const ROD_FATIGUE_SPEED = Math.sqrt(0.8);
+
+/** Highest limiter that neither floats the valves nor tires the rod, rpm. */
+export function safeLimiterRpm(c: EngineConfig): number {
+  return Math.min(valveFloatRpm(c) * 0.97, rodBreakRpm(c) * ROD_FATIGUE_SPEED * 0.98);
+}
+
 /** Mean piston speed, m/s. */
 export function meanPistonSpeed(c: Pick<EngineConfig, 'stroke'>, rpm: number): number {
   return (2 * (c.stroke / 1000) * rpm) / 60;

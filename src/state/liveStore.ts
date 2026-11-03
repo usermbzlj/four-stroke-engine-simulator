@@ -70,6 +70,8 @@ function describe(e: CoreEvent): Described | null {
       return { tone: 'warn', key: 'limiter', text: '撞到断火转速', level: 0 };
     case 'valveFloat':
       return { tone: 'warn', key: 'float', text: `${Math.round(e.rpm)} rpm 气门开始飘浮`, level: 0 };
+    case 'guard':
+      return { tone: 'warn', key: 'guard', text: '老周接手了', level: 1 };
     case 'failure':
       return { tone: 'fail', key: 'fail', text: e.failure.title, level: 0 };
   }

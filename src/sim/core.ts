@@ -27,6 +27,7 @@ import {
   blockChanged,
   displacementCc,
   rodInertiaForce,
+  safeLimiterRpm,
   valveFloatRpm,
 } from './config';
 import { createRng, type Rng } from './rng';
@@ -108,6 +109,8 @@ export interface Controls {
   ignition: boolean;
   brakeMode: BrakeMode;
   brakeRpm: number;
+  /** Mentor protect: clamp the limiter and refuse rod/valve failure. */
+  protect: boolean;
 }
 
 export const DEFAULT_CONTROLS: Controls = {
@@ -116,6 +119,7 @@ export const DEFAULT_CONTROLS: Controls = {
   ignition: true,
   brakeMode: 'off',
   brakeRpm: 5000,
+  protect: false,
 };
 
 export type FailureKind = 'rod' | 'valve' | 'piston' | 'headGasket';
@@ -137,7 +141,8 @@ export type CoreEvent =
   | { kind: 'misfire'; reason: 'lean' | 'rich' | 'dilution' }
   | { kind: 'failure'; failure: Failure }
   | { kind: 'limiter' }
-  | { kind: 'valveFloat'; rpm: number };
+  | { kind: 'valveFloat'; rpm: number }
+  | { kind: 'guard'; reason: 'rod' | 'valve' | 'piston'; rpm: number };
 
 export interface CycleStats {
   index: number;
@@ -628,10 +633,11 @@ export class EngineCore {
     const throttleCdA = 0.8 * (butterfly + bypass) + 0.6e-6;
 
     // ---- limiter -----------------------------------------------------------
-    if (rpm > this.ecu.limiterRpm) {
+    const limiterRpm = ctl.protect ? Math.min(this.ecu.limiterRpm, Math.floor(safeLimiterRpm(c) / 100) * 100) : this.ecu.limiterRpm;
+    if (rpm > limiterRpm) {
       if (!this.limiterCut) this.events.push({ kind: 'limiter' });
       this.limiterCut = true;
-    } else if (rpm < this.ecu.limiterRpm - 120) {
+    } else if (rpm < limiterRpm - 120) {
       this.limiterCut = false;
     }
     const fuelLimiterCut = this.limiterCut && this.ecu.limiterMode === 'fuel';
@@ -952,7 +958,7 @@ export class EngineCore {
     this.cycOmega += this.omega * h;
     this.cycTime += h;
     this.cycMap += this.pPl * h;
-    this.cycBrake += brake * h;
+    this.cycBrake += brake * this.omega * h;
     this.cycFriction += frictionMean * h;
 
     const bin = Math.min(CYCLE_BINS - 1, Math.floor(cycleDeg));
@@ -1064,6 +1070,12 @@ export class EngineCore {
     const harmful = Math.max(0, intensity - KNOCK_HARMLESS);
     this.pistonDamage += harmful * harmful * 0.06 * (this.p / 60e5);
     if (this.pistonDamage >= 1 && !this.failure) {
+      if (this.controls.protect) {
+        this.limiterCut = true;
+        this.events.push({ kind: 'guard', reason: 'piston', rpm });
+        this.pistonDamage = 0.99;
+        return;
+      }
       this.fail({
         kind: 'piston',
         title: '活塞顶烧穿',
@@ -1079,7 +1091,13 @@ export class EngineCore {
     const c = this.config;
     const force = rodInertiaForce(c, rpm);
     const ratio = force / c.rodStrength;
+    const guarded = this.controls.protect;
     if (ratio >= 1) {
+      if (guarded) {
+        this.limiterCut = true;
+        this.events.push({ kind: 'guard', reason: 'rod', rpm });
+        return;
+      }
       this.fail({
         kind: 'rod',
         title: '连杆拉断',
@@ -1092,6 +1110,12 @@ export class EngineCore {
     if (ratio > 0.8) {
       this.rodFatigue += Math.pow((ratio - 0.8) / 0.2, 3) * 0.003;
       if (this.rodFatigue >= 1) {
+        if (guarded) {
+          this.limiterCut = true;
+          this.events.push({ kind: 'guard', reason: 'rod', rpm });
+          this.rodFatigue = 0.99;
+          return;
+        }
         this.fail({
           kind: 'rod',
           title: '连杆疲劳断裂',
@@ -1109,6 +1133,11 @@ export class EngineCore {
     }
     if (floatRatio <= 0) this.floatWarned = false;
     if (floatRatio > 0.15) {
+      if (guarded) {
+        this.limiterCut = true;
+        this.events.push({ kind: 'guard', reason: 'valve', rpm });
+        return;
+      }
       this.fail({
         kind: 'valve',
         title: '气门撞活塞',
@@ -1138,8 +1167,8 @@ export class EngineCore {
         this.cycFuelBurnt > 1e-9 && !this.cycMisfire ? this.cycAirIn / (this.cycFuelIn * AFR) : this.cycAirIn > 0 ? 2 : 1;
       const mapKpa = this.cycMap / t / 1000;
       this.lastPmaxBar = this.cycPmax;
-      this.firedRecently = this.cycFired ? 2 : Math.max(0, this.firedRecently - 1);
-      const brakeAvg = this.cycBrake / t;
+      this.firedRecently = this.cycFired ? 4 : Math.max(0, this.firedRecently - 1);
+      const brakeAvg = Math.abs(this.cycOmega) > 1e-6 ? this.cycBrake / this.cycOmega : 0;
       this.lastCycle = {
         index: this.cycleIndex++,
         rpm,
@@ -1228,9 +1257,11 @@ export class EngineCore {
 
   get status(): EngineStatus {
     if (this.failure) return 'broken';
-    if (this.controls.starter && this.rpm < 900) return 'cranking';
+    const rpm = this.rpm;
+    if (this.controls.starter && rpm < 900) return 'cranking';
+    if (rpm > 400) return 'running';
     const cut = this.overrunCut || this.limiterCut;
-    if ((this.firedRecently > 0 || cut) && this.rpm > 250) return 'running';
+    if ((this.firedRecently > 0 || cut) && rpm > 250) return 'running';
     return 'off';
   }
 

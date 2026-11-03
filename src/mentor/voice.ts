@@ -4,13 +4,35 @@
  */
 
 const lastPick = new Map<string[], number>();
+const bags = new Map<string[], number[]>();
 
-/** Random line from a pool, never the same one twice in a row. */
+function shuffle(n: number): number[] {
+  const bag = Array.from({ length: n }, (_, i) => i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const a = bag[i]!;
+    bag[i] = bag[j]!;
+    bag[j] = a;
+  }
+  return bag;
+}
+
+/** Random line from a pool. Exhausts a shuffled bag so every line is reachable. */
 export function pick(pool: string[]): string {
   if (pool.length === 1) return pool[0]!;
-  const prev = lastPick.get(pool) ?? -1;
-  let i = Math.floor(Math.random() * (pool.length - 1));
-  if (i >= prev) i++;
+  let bag = bags.get(pool);
+  if (!bag || bag.length === 0) {
+    bag = shuffle(pool.length);
+    const prev = lastPick.get(pool);
+    if (prev !== undefined && bag[0] === prev && bag.length > 1) {
+      const k = 1 + Math.floor(Math.random() * (bag.length - 1));
+      const a = bag[0]!;
+      bag[0] = bag[k]!;
+      bag[k] = a;
+    }
+    bags.set(pool, bag);
+  }
+  const i = bag.shift()!;
   lastPick.set(pool, i);
   return pool[i]!;
 }
@@ -81,7 +103,7 @@ export const POPS_FIRST =
 export const POPS = ['又放炮了。你是不是故意的？……我懂，我年轻时也故意。', '噼里啪啦的，过年呢？'];
 
 export const STALL = [
-  '熄火了。松油门太快，ECU 还没来得及把旁通气门打开。',
+  '熄火了。飞轮里存的那点劲，扛不过下一个压缩冲程。',
   '它自己停了。不是你的错——好吧，一半是。',
 ];
 

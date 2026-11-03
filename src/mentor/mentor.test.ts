@@ -3,6 +3,7 @@ import { DEFAULT_BENCH, PRESETS, rodBreakRpm, valveFloatRpm, type EcuConfig, typ
 import { EngineCore } from '../sim/core';
 import { assessBuild, reviewFailure, safeLimiter } from './advice';
 import { tuneLambda, tuneSpark, type Sample, type TunerPort } from './tuner';
+import { pick } from './voice';
 
 const FS = 48000;
 
@@ -63,6 +64,16 @@ class CorePort implements TunerPort {
     return this.core.status !== 'running';
   }
 }
+
+describe('voice', () => {
+  it('can pick every line in a two-line pool', () => {
+    const pool = ['这人没救了。来，零件咱们批量订吧，有折扣。', '零件商刚给我发消息，问你是不是新开了个厂。'];
+    const seen = new Set<string>();
+    for (let i = 0; i < 20; i++) seen.add(pick(pool));
+    expect(seen.size).toBe(2);
+    expect(seen.has(pool[0]!)).toBe(true);
+  });
+});
 
 describe('build check-up', () => {
   for (const p of PRESETS) {

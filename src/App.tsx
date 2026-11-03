@@ -13,7 +13,7 @@ import { EngineView } from './ui/EngineView';
 import { EventFeed } from './ui/EventFeed';
 import { FailureReport } from './ui/FailureReport';
 import { LiveStrip } from './ui/LiveStrip';
-import { MentorPanel } from './ui/MentorPanel';
+import { MentorPanel, MentorStrip } from './ui/MentorPanel';
 import { Readouts } from './ui/Readouts';
 import { Scope } from './ui/Scope';
 import { StartScreen } from './ui/StartScreen';
@@ -37,7 +37,7 @@ export default function App(): React.ReactElement {
   const drawer = useUi((s) => s.drawer);
   const setDrawer = useUi((s) => s.setDrawer);
   const [shake, setShake] = useState(false);
-  const lastFailure = useRef<unknown>(null);
+  const lastFailure = useRef<string | null>(null);
 
   useBenchInput(started);
 
@@ -46,10 +46,11 @@ export default function App(): React.ReactElement {
   }, [started]);
 
   useEffect(() => {
-    if (failure && failure !== lastFailure.current) {
+    const sig = failure ? `${failure.kind}:${Math.round(failure.rpm)}:${Math.round(failure.crankDeg)}` : null;
+    if (sig && sig !== lastFailure.current) {
       setShake(true);
       const t = window.setTimeout(() => setShake(false), 600);
-      lastFailure.current = failure;
+      lastFailure.current = sig;
       return () => window.clearTimeout(t);
     }
     if (!failure) lastFailure.current = null;
@@ -135,6 +136,7 @@ export default function App(): React.ReactElement {
               </button>
             </header>
             <LiveStrip />
+            <MentorStrip />
           </div>
           {drawer === 'build' && <BuildSheet />}
           {drawer === 'ecu' && <EcuPanel />}
