@@ -142,24 +142,6 @@ kbd {
   font-size: 1.05rem;
   color: var(--muted);
 }
-.start-engines {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  border-top: 1px solid var(--line);
-  margin-bottom: 32px;
-}
-.start-engine {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 18px 18px 20px 0;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: none;
-  text-align: left;
-  cursor: pointer;
-  position: relative;
-}
 .start-engine::before {
   content: '';
   position: absolute;
@@ -171,18 +153,6 @@ kbd {
 }
 .start-engine.is-on::before {
   background: var(--heat);
-}
-.start-engine-name {
-  font-size: 1.15rem;
-  font-weight: 600;
-}
-.start-engine-spec {
-  font-family: var(--num);
-  font-size: 0.95rem;
-  color: var(--intake);
-}
-.start-engine-blurb {
-  color: var(--muted);
 }
 .start-keys {
   margin-top: 20px;

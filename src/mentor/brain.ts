@@ -353,10 +353,12 @@ function watchEngine(t: number, dt: number): void {
   w.damage = s.pistonDamage;
   if (knocking && damageRate > 0.002 && !tuning) {
     if (protect && s.pistonDamage > 0.12) {
+      // A job may forbid the knock sensor; then only the spark comes back.
+      const sensor = useGame.getState().mode === 'sandbox';
       rescue(
         'piston',
-        `活塞损伤 ${pct(s.pistonDamage)}，还在爆震。我收了油门，点火角退了 4°，把爆震控制打开了。`,
-        { label: '', ecu: { advanceOffset: Math.max(-20, ecu.advanceOffset - 4), knockControl: true } },
+        `活塞损伤 ${pct(s.pistonDamage)}，还在爆震。我收了油门，点火角退了 4°${sensor ? '，把爆震控制打开了' : ''}。`,
+        { label: '', ecu: { advanceOffset: Math.max(-20, ecu.advanceOffset - 4), ...(sensor ? { knockControl: true } : {}) } },
       );
     } else if (s.pistonDamage > 0.08) {
       w.warned.set('piston', t);
