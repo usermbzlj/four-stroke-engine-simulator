@@ -142,18 +142,6 @@ kbd {
   font-size: 1.05rem;
   color: var(--muted);
 }
-.start-engine::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 18px;
-  top: -1px;
-  height: 2px;
-  background: transparent;
-}
-.start-engine.is-on::before {
-  background: var(--heat);
-}
 .start-keys {
   margin-top: 20px;
   color: var(--muted);
