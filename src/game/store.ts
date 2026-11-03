@@ -98,3 +98,27 @@ export function isUnlocked(index: number, progress: Record<string, JobProgress>)
   const prev = JOBS[index - 1];
   return !!prev && (progress[prev.id]?.stars ?? 0) > 0;
 }
+
+const RANKS: [number, string][] = [
+  [0, '学徒'],
+  [3, '帮工'],
+  [8, '台架工'],
+  [14, '调校师'],
+  [21, '老师傅'],
+  [28, '老周点头'],
+  [33, '单缸之王'],
+];
+
+/** Workshop title for a star count, and the stars needed for the next one. */
+export function rank(stars: number): { title: string; next: number | null } {
+  let title = RANKS[0]![1];
+  let next: number | null = null;
+  for (const [need, t] of RANKS) {
+    if (stars >= need) title = t;
+    else {
+      next = need;
+      break;
+    }
+  }
+  return { title, next };
+}

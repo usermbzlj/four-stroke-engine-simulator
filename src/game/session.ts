@@ -124,6 +124,8 @@ interface AcceptanceState {
   cost: number;
   /** Stars held before this run, to show what was gained. */
   prevStars: number;
+  /** Best result before this run, to draw for comparison. */
+  prevBest: { hp: number; curve: [number, number][] } | null;
   error: string | null;
 }
 
@@ -138,6 +140,7 @@ export const useAcceptance = create<AcceptanceState>()(() => ({
   grade: null,
   cost: 0,
   prevStars: 0,
+  prevBest: null,
   error: null,
 }));
 
@@ -188,6 +191,10 @@ export function startAcceptance(): void {
     grade: null,
     cost,
     prevStars: useGame.getState().progress[job.id]?.stars ?? 0,
+    prevBest: (() => {
+      const p = useGame.getState().progress[job.id];
+      return p && p.bestCurve.length > 1 ? { hp: p.bestHp, curve: p.bestCurve } : null;
+    })(),
     error: null,
   });
 

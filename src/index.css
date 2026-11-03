@@ -1456,8 +1456,8 @@ kbd {
     grid-template-rows: none;
     grid-template-areas:
       'engine'
-      'gauges'
       'side'
+      'gauges'
       'scope';
   }
   .side {
@@ -1492,7 +1492,9 @@ kbd {
     padding: 8px 12px;
     gap: 8px;
   }
-  .ctl-hint {
+  .ctl-hint,
+  .topbar-tabs kbd,
+  .ctl kbd {
     display: none;
   }
   .drawer {
@@ -2124,6 +2126,17 @@ line.target.is-fail,
 .board-score span {
   color: var(--muted);
   margin-left: 4px;
+}
+.board-rank {
+  margin: 0;
+  font-family: var(--text);
+  font-weight: 600;
+  color: var(--ink);
+}
+.board-rank small {
+  margin-left: 8px;
+  font-weight: 400;
+  color: var(--faint);
 }
 .board-nav {
   display: flex;

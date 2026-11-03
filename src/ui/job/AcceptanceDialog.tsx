@@ -37,7 +37,7 @@ export function AcceptanceDialog(): React.ReactElement | null {
   if (!a.open || !job) return null;
   const g = a.grade;
   const r = a.result;
-  const best = progress[job.id];
+  const best = a.prevBest;
   const index = JOBS.indexOf(job);
   const next = JOBS[index + 1];
   const nextOpen = next !== undefined && isUnlocked(index + 1, progress);
@@ -78,17 +78,17 @@ export function AcceptanceDialog(): React.ReactElement | null {
           maxRpm={limiter}
           marks={marks}
           series={[
-            ...(best && best.bestCurve.length > 1 ? [{ points: best.bestCurve, color: 'var(--muted)', ghost: true }] : []),
+            ...(best ? [{ points: best.curve, color: 'var(--muted)', ghost: true }] : []),
             { points: a.curve, color: 'var(--heat)', live: true },
           ]}
         />
         <p className="acc-legend">
           <i className="sw sw--live" />
           这次
-          {best && best.bestCurve.length > 1 && (
+          {best && (
             <>
               <i className="sw sw--ghost" />
-              最好成绩（{best.bestHp.toFixed(1)} hp）
+              之前最好（{best.hp.toFixed(1)} hp）
             </>
           )}
           <span>实线扭矩，虚线功率</span>

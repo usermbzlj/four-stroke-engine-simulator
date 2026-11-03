@@ -1,7 +1,7 @@
 import { JOBS } from '../../game/jobs';
 import { money } from '../../game/parts';
 import { enterJob, enterSandbox } from '../../game/session';
-import { isUnlocked, totalStars, useGame } from '../../game/store';
+import { isUnlocked, rank, totalStars, useGame } from '../../game/store';
 import { PRESETS } from '../../sim/config';
 import { useLink } from '../../state/engineLink';
 import { openBench } from './openBench';
@@ -16,6 +16,7 @@ export function JobBoard(): React.ReactElement {
   const started = useLink((s) => s.started);
   const setView = useUi((s) => s.setView);
   const stars = totalStars(progress);
+  const r = rank(stars);
 
   return (
     <div className="board">
@@ -27,6 +28,10 @@ export function JobBoard(): React.ReactElement {
         <div className="board-score">
           <b>{stars}</b>
           <span>/ {JOBS.length * 3} ★</span>
+          <p className="board-rank">
+            {r.title}
+            {r.next !== null && <small>再拿 {r.next - stars} 颗星升级</small>}
+          </p>
         </div>
         <nav className="board-nav">
           <button type="button" className="btn" onClick={() => void openBench(enterSandbox)}>
