@@ -18,7 +18,8 @@
     "check": "npm run typecheck && npm run lint && npm run test",
     "bench": "tsx scripts/bench.mts",
     "render": "tsx scripts/render.mts",
-    "jobs": "tsx scripts/jobs.mts"
+    "jobs": "tsx scripts/jobs.mts",
+    "deploy": "npm run build && node scripts/deploy-pages.mjs"
   },
   "dependencies": {
     "react": "^19.3.1",
