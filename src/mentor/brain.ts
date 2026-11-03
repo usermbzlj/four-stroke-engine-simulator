@@ -455,15 +455,15 @@ function watchEngine(t: number, dt: number): void {
   const lean = w.misfires.filter((m) => m.reason === 'lean').length;
   const rich = w.misfires.filter((m) => m.reason === 'rich').length;
   if (s.overrunCut) w.lastOverrun = t;
-  if (s.limiterCut || s.overrunCut || t - (w.limiterHits[0] ?? 0) < 1.2 || t - w.lastOverrun < 1.5 || throttle < 0.03) {
+  if (s.limiterCut || s.overrunCut || t - (w.limiterHits[w.limiterHits.length - 1] ?? -9) < 1.2 || t - w.lastOverrun < 1.5 || throttle < 0.03) {
     /* overrun/limiter misfires are not a mixture problem */
-  } else if (lean >= 4) {
-    const wot = throttle > 0.85;
-    say('misfire', 'warn', `一直在失火，混合气太稀，火花点不着。${wot ? '全油门' : '部分负荷'} λ 现在是 ${(wot ? ecu.wotLambda : ecu.cruiseLambda).toFixed(2)}。`, {
+  } else if (lean >= 4 && ecu.cruiseLambda >= 1.3 && throttle < 0.85) {
+    // Only the part-load map can be set lean enough to miss (full-load λ tops out at 1.3).
+    say('misfire', 'warn', `一直在失火，混合气太稀，火花点不着。部分负荷 λ 设成了 ${ecu.cruiseLambda.toFixed(2)}，超过 1.35 就开始点不着。`, {
       cooldown: 20,
-      actions: [fixAction(wot ? { label: '全油门 λ 改回 0.88', ecu: { wotLambda: 0.88 } } : { label: '部分负荷 λ 改回 1.00', ecu: { cruiseLambda: 1 } }, true)],
+      actions: [fixAction({ label: '部分负荷 λ 改回 1.00', ecu: { cruiseLambda: 1 } }, true)],
     });
-  } else if (rich >= 4) {
+  } else if (rich >= 4 && Math.min(ecu.wotLambda, ecu.cruiseLambda) <= 0.75) {
     say('misfire', 'warn', '浓到点不着了，缸里全是油没有气。', {
       cooldown: 20,
       actions: [fixAction({ label: 'λ 都改回出厂', ecu: { wotLambda: 0.88, cruiseLambda: 1 } }, true)],

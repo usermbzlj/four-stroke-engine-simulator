@@ -323,6 +323,8 @@ export class EngineCore {
   private cycTrapped = 0;
   private cycKnock = 0;
   private cycMisfire = false;
+  /** Sparks still running on a charge that was inducted with the injector shut. */
+  private starvedSparks = 0;
   private cycFired = false;
   private cycOmega = 0;
   private cycTime = 0;
@@ -739,6 +741,8 @@ export class EngineCore {
       const burnedFrac = this.mIp > 0 ? clamp(this.burnedIp / this.mIp, 0, 1) : 0;
       const airIn = dmIn * (1 - burnedFrac);
       const fuelIn = this.fuelOn ? airIn / (AFR * this.lambdaTarget) : 0;
+      // This cycle and the next (exhaust backflow) carry dry air: a lean miss there is expected.
+      if (!this.fuelOn && airIn > 0) this.starvedSparks = 2;
       this.mAir += airIn;
       this.mFuel += fuelIn;
       this.burnedIp = Math.max(0, this.burnedIp - dmIn * burnedFrac);
@@ -1032,6 +1036,9 @@ export class EngineCore {
     const residual = 1 - fresh / this.m;
     const lambda = this.mFuel > 1e-9 ? this.mAir / (this.mFuel * AFR) : 99;
 
+    const starved = this.starvedSparks > 0;
+    if (starved) this.starvedSparks--;
+
     let reason: 'lean' | 'rich' | 'dilution' | null = null;
     const r = this.rng();
     if (lambda > 1.6 || r < smoothstep(1.35, 1.6, lambda)) reason = 'lean';
@@ -1040,8 +1047,8 @@ export class EngineCore {
 
     if (reason) {
       this.cycMisfire = true;
-      // With the injector shut (overrun or fuel-cut limiter) a lean miss is expected, not news.
-      const fuelCut = this.overrunCut || (this.limiterCut && this.ecu.limiterMode === 'fuel');
+      // A charge inducted with the injector shut (overrun, fuel-cut limiter) misses by design, not news.
+      const fuelCut = starved || this.overrunCut || (this.limiterCut && this.ecu.limiterMode === 'fuel');
       if (lambda < 50 && !(fuelCut && reason === 'lean')) this.events.push({ kind: 'misfire', reason });
       return;
     }
