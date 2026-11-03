@@ -44,6 +44,8 @@ export interface Check {
 const f1 = (v: number): string => v.toFixed(1);
 /** Measured values round down, so a miss never displays as the target. */
 const m1 = (v: number): string => (Math.floor(v * 10 + 1e-9) / 10).toFixed(1);
+/** For lower-is-better limits: round up, for the same reason. */
+const c1 = (v: number): string => (Math.ceil(v * 10 - 1e-9) / 10).toFixed(1);
 const rpmText = (v: number): string => Math.round(v).toLocaleString('en-US');
 
 function test(label: string, judge: (r: AcceptanceResult) => CheckOutcome, mark?: Check['mark']): Check {
@@ -87,20 +89,21 @@ export const C = {
   freeRev: (seconds: number): Check =>
     test(`空轰到红线 ≤ ${seconds.toFixed(2)} 秒`, (r) => ({
       pass: r.freeRevTime !== null && r.freeRevTime <= seconds,
-      actual: r.freeRevTime === null ? '没轰上去' : `${r.freeRevTime.toFixed(2)} 秒`,
+      // Lower is better here, so round up for display.
+      actual: r.freeRevTime === null ? '没轰上去' : `${(Math.ceil(r.freeRevTime * 100 - 1e-9) / 100).toFixed(2)} 秒`,
     })),
   pops: (n: number): Check => test(`收油放炮 ≥ ${n} 响`, (r) => ({ pass: r.pops >= n, actual: `${r.pops} 响` })),
   piston: (maxPct: number): Check =>
     test(`活塞损伤 ≤ ${maxPct}%`, (r) => ({
       pass: r.pistonDamage * 100 <= maxPct,
-      actual: `${(r.pistonDamage * 100).toFixed(1)}%`,
+      actual: `${c1(r.pistonDamage * 100)}%`,
     })),
   coolant: (maxC: number): Check =>
     test(`水温不超过 ${maxC} °C`, (r) => ({ pass: r.coolantMax <= maxC, actual: `最高 ${r.coolantMax.toFixed(0)} °C` })),
   rodFatigue: (maxPct: number): Check =>
     test(`连杆疲劳 ≤ ${maxPct}%`, (r) => ({
       pass: r.rodFatigue * 100 <= maxPct,
-      actual: `${(r.rodFatigue * 100).toFixed(1)}%`,
+      actual: `${c1(r.rodFatigue * 100)}%`,
     })),
   knockSensorOff: (): Check =>
     rule('爆震控制保持关闭（传感器坏了）', ({ ecu }) => ({ pass: !ecu.knockControl, actual: ecu.knockControl ? '开着' : '关' })),
@@ -192,7 +195,7 @@ export const JOBS: Job[] = [
     presetId: 'street-250',
     plan: {},
     rules: [C.survive(), C.peakHp(18), C.muffler(['stock']), C.octaneMax(92)],
-    bonus: C.peakHp(19.5),
+    bonus: C.peakHp(20),
     budget: 1500,
     locked: ['bore', 'crank', 'head', 'piston', 'rod'],
   },
@@ -243,7 +246,7 @@ export const JOBS: Job[] = [
     presetId: 'street-250',
     plan: { freeRev: true },
     rules: [C.survive(), C.freeRev(0.6), C.idle(1000)],
-    bonus: C.freeRev(0.47),
+    bonus: C.freeRev(0.48),
     budget: 500,
   },
   {
@@ -280,8 +283,8 @@ export const JOBS: Job[] = [
     presetId: 'street-250',
     plan: { endurance: { seconds: 5 } },
     rules: [C.survive(), C.ccMax(250), C.octaneMax(98), C.peakHp(24)],
-    bonus: C.peakHp(28),
-    budget: 4500,
+    bonus: C.peakHp(27),
+    budget: 5000,
   },
   {
     id: 'king',
@@ -293,7 +296,7 @@ export const JOBS: Job[] = [
     plan: { endurance: { seconds: 8 } },
     rules: [C.survive(), C.octaneMax(98), C.peakHp(55)],
     bonus: C.peakHp(62),
-    budget: 6000,
+    budget: 7000,
   },
 ];
 

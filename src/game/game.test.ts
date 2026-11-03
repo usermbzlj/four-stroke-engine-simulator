@@ -66,8 +66,8 @@ describe('grading', () => {
   it('awards one star for the rules, one for the stretch goal and one for the budget', () => {
     const ctx = { config: start.config, ecu: start.ecu };
     expect(grade(job, { ...ctx, cost: 0, result: fakeResult({ peakHp: 18.2 }) }).stars).toBe(2);
-    expect(grade(job, { ...ctx, cost: 0, result: fakeResult({ peakHp: 19.6 }) }).stars).toBe(3);
-    expect(grade(job, { ...ctx, cost: 99999, result: fakeResult({ peakHp: 19.6 }) }).stars).toBe(2);
+    expect(grade(job, { ...ctx, cost: 0, result: fakeResult({ peakHp: 20.1 }) }).stars).toBe(3);
+    expect(grade(job, { ...ctx, cost: 99999, result: fakeResult({ peakHp: 20.1 }) }).stars).toBe(2);
     expect(grade(job, { ...ctx, cost: 0, result: fakeResult({ peakHp: 17 }) }).stars).toBe(0);
   });
 

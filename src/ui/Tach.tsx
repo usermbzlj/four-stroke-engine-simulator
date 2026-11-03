@@ -32,8 +32,10 @@ export function Tach(): React.ReactElement {
   const rodRpm = useMemo(() => rodBreakRpm(config), [config]);
 
   const ticks = [];
-  for (let v = 0; v <= top; v += 500) {
-    const major = v % 1000 === 0;
+  const labelEvery = top > 12000 ? 2000 : 1000;
+  const minorEvery = labelEvery / 2;
+  for (let v = 0; v <= top; v += minorEvery) {
+    const major = v % labelEvery === 0;
     const a = angle(v);
     const [x0, y0] = polar(a, R);
     const [x1, y1] = polar(a, R - (major ? 14 : 7));
