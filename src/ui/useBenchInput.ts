@@ -3,6 +3,7 @@ import { useControls } from '../state/controlStore';
 import { restoreEngine } from '../state/engineLink';
 import { useLive } from '../state/liveStore';
 import { useUi, type Drawer } from '../state/uiStore';
+import { useView } from '../state/viewStore';
 
 const DRAWER_KEYS: Record<string, Drawer> = { q: 'build', w: 'ecu', e: 'dyno' };
 
@@ -46,6 +47,8 @@ export function useBenchInput(enabled: boolean): void {
     const down = (e: KeyboardEvent): void => {
       if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
       const key = e.key.toLowerCase();
+      // Arrow keys belong to a focused slider or select, not to the bench.
+      if (key.startsWith('arrow') && e.target instanceof HTMLElement && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT')) return;
       if (key === 'r' && !e.repeat && useLive.getState().snapshot?.failure) {
         restoreEngine();
         return;
@@ -70,7 +73,20 @@ export function useBenchInput(enabled: boolean): void {
         set({ pedal: 1 });
         return;
       }
+      if (key === 'arrowleft' || key === 'arrowright') {
+        e.preventDefault();
+        useView.getState().scrub((key === 'arrowleft' ? -1 : 1) * (e.shiftKey ? 10 : 2));
+        return;
+      }
       if (e.repeat && key !== 'arrowup' && key !== 'arrowdown') return;
+      if (key === 'p') {
+        useView.getState().togglePause();
+        return;
+      }
+      if (key === 'l') {
+        useView.getState().toggleLabels();
+        return;
+      }
       if (key === 's') set({ starter: true });
       else if (key === 'k') set({ ignition: !useControls.getState().ignition });
       else if (key === 'b') toggleBrake();

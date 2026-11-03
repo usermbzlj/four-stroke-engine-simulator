@@ -221,7 +221,7 @@ kbd {
   grid-template-rows: minmax(0, 1fr) clamp(160px, 27vh, 250px);
   grid-template-areas:
     'side engine gauges'
-    'side scope scope';
+    'side scope gauges';
   min-height: 0;
 }
 
@@ -257,13 +257,49 @@ kbd {
   height: 100%;
   display: block;
 }
-.engine-slowmo {
+.engine-canvas.is-scrub {
+  cursor: ew-resize;
+}
+.ev-tools {
   position: absolute;
-  left: 16px;
-  bottom: 12px;
-  font-family: var(--num);
-  color: var(--faint);
-  pointer-events: none;
+  left: 12px;
+  top: 10px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ev-seg {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(15, 18, 20, 0.55);
+}
+.ev-seg button,
+.ev-btn {
+  font: 500 12px var(--text);
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.ev-seg button + button {
+  border-left: 1px solid var(--line);
+}
+.ev-btn {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(15, 18, 20, 0.55);
+}
+.ev-seg button:hover,
+.ev-btn:hover {
+  color: var(--ink);
+}
+.ev-seg button.is-on,
+.ev-btn.is-on {
+  color: var(--bg);
+  background: var(--mentor);
 }
 .engine-view.is-shaking {
   animation: shake 0.6s cubic-bezier(0.36, 0.07, 0.19, 0.97);
@@ -350,7 +386,9 @@ kbd {
 .tach-legend {
   display: flex;
   justify-content: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  white-space: nowrap;
+  gap: 2px 14px;
   margin: 0;
   font-size: 0.8rem;
 }
@@ -397,7 +435,7 @@ kbd {
   position: absolute;
   left: 0;
   right: 0;
-  top: 58%;
+  top: 54%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -409,15 +447,22 @@ kbd {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+.tach-sub {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+}
 .tach-unit {
   font-family: var(--num);
   color: var(--muted);
-  margin-top: 2px;
+  text-align: right;
 }
 .tach-status {
-  margin-top: 8px;
   font-size: 0.85rem;
   color: var(--muted);
+  white-space: nowrap;
 }
 .tach-status--running {
   color: var(--intake);
@@ -454,10 +499,12 @@ kbd {
   min-width: 0;
 }
 .reading-label {
+  white-space: nowrap;
   font-size: 0.8rem;
   color: var(--muted);
 }
 .reading-value {
+  white-space: nowrap;
   font-family: var(--num);
   font-size: 22px;
   font-weight: 600;
@@ -474,6 +521,9 @@ kbd {
   color: var(--muted);
 }
 .reading-note {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--num);
   font-size: 0.9rem;
   color: var(--muted);
@@ -559,7 +609,12 @@ kbd {
   display: flex;
   align-items: baseline;
   gap: 16px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.scope-head h2 {
+  flex: none;
 }
 .scope-head h2 {
   margin: 0;
@@ -567,6 +622,10 @@ kbd {
   font-weight: 600;
 }
 .scope-head p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
   margin: 0;
   font-size: 0.8rem;
   color: var(--muted);
@@ -778,8 +837,9 @@ kbd {
   border-top: 1px dashed var(--line);
 }
 .strip-cell {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  /* label, value, and a reserved line for the change marker */
+  grid-template-rows: auto auto 1.05em;
   min-width: 0;
   line-height: 1.15;
 }
@@ -812,6 +872,7 @@ kbd {
   color: var(--heat);
 }
 .delta {
+  white-space: nowrap;
   font-family: var(--num);
   font-size: 0.85rem;
   font-weight: 600;
@@ -828,9 +889,18 @@ kbd {
 }
 .strip-health {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow: hidden;
   gap: 6px 14px;
   align-items: center;
+  min-height: 1.5em;
+}
+.strip-health > * {
+  flex: none;
+}
+.strip-ok {
+  font-size: 0.78rem;
+  color: var(--faint);
 }
 .meter {
   position: relative;
@@ -855,12 +925,23 @@ kbd {
 }
 .strip-foot {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-height: 1.9em;
   align-items: center;
   justify-content: space-between;
   gap: 4px 10px;
   font-size: 0.8rem;
   color: var(--muted);
+}
+.strip-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.strip-foot > :not(.strip-msg) {
+  flex: none;
 }
 .strip-foot b {
   color: var(--ink);

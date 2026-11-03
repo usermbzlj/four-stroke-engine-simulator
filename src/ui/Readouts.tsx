@@ -5,7 +5,8 @@ interface ReadingProps {
   label: string;
   value: string;
   unit?: string;
-  note?: string | undefined;
+  /** undefined keeps an empty line; null drops it. */
+  note?: string | null | undefined;
   tone?: 'hot' | 'cold' | 'alarm' | undefined;
 }
 
@@ -17,7 +18,8 @@ function Reading({ label, value, unit, note, tone }: ReadingProps): React.ReactE
         {value}
         {unit && <small>{unit}</small>}
       </span>
-      {note && <span className="reading-note">{note}</span>}
+      {/* Reserve the note line even when empty, so the column never jumps. */}
+      {note !== null && <span className="reading-note">{note ?? '\u00a0'}</span>}
     </div>
   );
 }
@@ -52,20 +54,18 @@ export function Readouts(): React.ReactElement {
           tone={s && s.knockRetard > 0.3 ? 'alarm' : undefined}
         />
         <Reading label="空燃比 λ" value={fmt(c?.misfire ? undefined : c?.lambda, 2)} note={s ? `目标 ${s.lambdaTarget.toFixed(2)}` : undefined} />
-        <Reading label="进气压力" value={s ? s.mapKpa.toFixed(0) : '—'} unit="kPa" />
-        <Reading label="充气效率" value={fmt(c ? c.ve * 100 : undefined)} unit="%" />
+        <Reading label="进气压力" value={s ? s.mapKpa.toFixed(0) : '—'} unit="kPa" note={null} />
+        <Reading label="充气效率" value={fmt(c ? c.ve * 100 : undefined)} unit="%" note={null} />
       </div>
       <div className="readouts-group">
-        <Reading label="排温" value={s ? s.egtC.toFixed(0) : '—'} unit="°C" tone={s && s.egtC > 850 ? 'hot' : undefined} />
-        <Reading label="水温" value={s ? s.coolantC.toFixed(0) : '—'} unit="°C" tone={s && s.coolantC > 110 ? 'alarm' : undefined} />
+        <Reading label="排温" value={s ? s.egtC.toFixed(0) : '—'} unit="°C" tone={s && s.egtC > 850 ? 'hot' : undefined} note={null} />
+        <Reading label="水温" value={s ? s.coolantC.toFixed(0) : '—'} unit="°C" tone={s && s.coolantC > 110 ? 'alarm' : undefined} note={null} />
         <Reading label="机油" value={s ? s.oilC.toFixed(0) : '—'} unit="°C" note={s ? `${s.oilPressure.toFixed(1)} bar` : undefined} />
       </div>
-      {s && (s.pistonDamage > 0.002 || s.rodFatigue > 0.002) && (
-        <div className="readouts-group">
-          <Reading label="活塞损伤" value={(s.pistonDamage * 100).toFixed(1)} unit="%" tone={s.pistonDamage > 0.3 ? 'alarm' : undefined} />
-          <Reading label="连杆疲劳" value={(s.rodFatigue * 100).toFixed(1)} unit="%" tone={s.rodFatigue > 0.3 ? 'alarm' : undefined} />
-        </div>
-      )}
+      <div className="readouts-group">
+        <Reading label="活塞损伤" value={s ? (s.pistonDamage * 100).toFixed(1) : '—'} unit="%" tone={s && s.pistonDamage > 0.3 ? 'alarm' : undefined} note={null} />
+        <Reading label="连杆疲劳" value={s ? (s.rodFatigue * 100).toFixed(1) : '—'} unit="%" tone={s && s.rodFatigue > 0.3 ? 'alarm' : undefined} note={null} />
+      </div>
     </div>
   );
 }

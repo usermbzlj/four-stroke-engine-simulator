@@ -64,5 +64,10 @@ export function copyTrace(t: CycleTrace): CycleTrace {
     temperature: t.temperature.slice(),
     fresh: t.fresh.slice(),
     flame: t.flame.slice(),
+    burn: t.burn.slice(),
+    ivFlow: t.ivFlow.slice(),
+    evFlow: t.evFlow.slice(),
+    ipP: t.ipP.slice(),
+    epP: t.epP.slice(),
   };
 }

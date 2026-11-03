@@ -101,22 +101,27 @@ export function LiveStrip(): React.ReactElement {
         <Cell label="断火时活塞" value={f.speed.toFixed(1)} unit="m/s" tone={f.speed > 25 ? 'alarm' : undefined} />
       </div>
 
-      {(damage > 0.005 || fatigue > 0.005 || knockRetard > 0.3) && (
-        <div className="strip-health">
-          {damage > 0.005 && <Meter label="活塞损伤" value={damage} />}
-          {fatigue > 0.005 && <Meter label="连杆疲劳" value={fatigue} />}
-          {knockRetard > 0.3 && <span className="strip-note strip-note--alarm">爆震退角 {knockRetard.toFixed(1)}°</span>}
-        </div>
-      )}
+      {/* Always present, so the panel below never shifts when a meter appears. */}
+      <div className="strip-health">
+        {damage > 0.005 || fatigue > 0.005 || knockRetard > 0.3 ? (
+          <>
+            {damage > 0.005 && <Meter label="活塞损伤" value={damage} />}
+            {fatigue > 0.005 && <Meter label="连杆疲劳" value={fatigue} />}
+            {knockRetard > 0.3 && <span className="strip-note strip-note--alarm">爆震退角 {knockRetard.toFixed(1)}°</span>}
+          </>
+        ) : (
+          <span className="strip-ok">活塞、连杆完好，没有爆震退角</span>
+        )}
+      </div>
 
       <div className="strip-foot">
         {fresh ? (
-          <span>
+          <span className="strip-msg">
             在调 <b>{fresh.label}</b>
             {b ? (fair ? '，变化是跟你动手前比的。' : '，转速或油门变了，变化只能参考。') : '。'}
           </span>
         ) : (
-          <span>动任何一个滑块，这里会显示它带来的变化。</span>
+          <span className="strip-msg">动任何一个滑块，这里会显示它带来的变化。</span>
         )}
         {status === 'running' &&
           (braked ? (

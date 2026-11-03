@@ -150,7 +150,7 @@ export function drawPressureVolume(
   ctx.textAlign = 'center';
   ctx.fillText('上止点', lx(1) + 16, h - 6);
   ctx.fillText('下止点', lx(cr) - 16, h - 6);
-  ctx.fillText('容积（对数）', padL + pw / 2, h - 6);
+  if (pw > 220) ctx.fillText('容积（对数）', padL + pw / 2, h - 6);
 
   for (let i = traces.length - 1; i >= 0; i--) {
     const t = traces[i]!;

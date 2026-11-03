@@ -178,6 +178,16 @@ export interface CycleTrace {
   fresh: Float32Array;
   /** Flame presence 0-1 while the charge burns. */
   flame: Float32Array;
+  /** Mass fraction burned, 0-1 (holds at the end value until the next spark). */
+  burn: Float32Array;
+  /** Mass flow through the intake valve, g/s; positive into the cylinder, negative = reversion. */
+  ivFlow: Float32Array;
+  /** Mass flow through the exhaust valve, g/s; positive out of the cylinder, negative = backflow. */
+  evFlow: Float32Array;
+  /** Intake port pressure behind the valve, bar. */
+  ipP: Float32Array;
+  /** Exhaust port pressure behind the valve, bar. */
+  epP: Float32Array;
 }
 
 const newTrace = (): CycleTrace => ({
@@ -185,6 +195,11 @@ const newTrace = (): CycleTrace => ({
   temperature: new Float32Array(CYCLE_BINS),
   fresh: new Float32Array(CYCLE_BINS),
   flame: new Float32Array(CYCLE_BINS),
+  burn: new Float32Array(CYCLE_BINS),
+  ivFlow: new Float32Array(CYCLE_BINS),
+  evFlow: new Float32Array(CYCLE_BINS),
+  ipP: new Float32Array(CYCLE_BINS),
+  epP: new Float32Array(CYCLE_BINS),
 });
 
 // ---------------------------------------------------------------------------
@@ -971,6 +986,11 @@ export class EngineCore {
     tr.temperature[bin] = this.T;
     tr.fresh[bin] = (this.mAir + this.mFuel) / this.m;
     tr.flame[bin] = this.burning ? 1 - this.xbPrev * 0.7 : 0;
+    tr.burn[bin] = this.xbPrev;
+    tr.ivFlow[bin] = mdotIv * 1000;
+    tr.evFlow[bin] = mdotEv * 1000;
+    tr.ipP[bin] = this.pIp / 1e5;
+    tr.epP[bin] = this.pEp / 1e5;
 
     // ---- advance the crank and fire angle-triggered events -------------------
     let next = theta + this.omega * h;
@@ -1029,6 +1049,8 @@ export class EngineCore {
   private spark(rpm: number): void {
     const ctl = this.controls;
     this.cycAdvance = this.advance;
+    // Nothing has burned in this cycle yet, whether or not it lights.
+    this.xbPrev = 0;
     if (!ctl.ignition || this.failure) return;
     if (this.limiterCut && this.ecu.limiterMode === 'spark') return;
 

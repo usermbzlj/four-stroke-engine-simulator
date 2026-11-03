@@ -74,8 +74,10 @@ export function Tach(): React.ReactElement {
       </svg>
       <div className="tach-readout">
         <span className="tach-rpm">{Math.round(Math.max(0, rpm)).toLocaleString('en-US')}</span>
-        <span className="tach-unit">rpm</span>
-        <span className={`tach-status tach-status--${status}`}>{STATUS_TEXT[status]}</span>
+        <span className="tach-sub">
+          <span className="tach-unit">rpm</span>
+          <span className={`tach-status tach-status--${status}`}>{STATUS_TEXT[status]}</span>
+        </span>
       </div>
       <dl className="tach-legend">
         <div className="tach-legend--float">
