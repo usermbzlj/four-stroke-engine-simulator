@@ -23,6 +23,15 @@ export interface AcceptancePlan {
   bench?: Partial<BenchConfig>;
   /** Lowest sweep point, rpm. */
   sweepFrom?: number;
+  /**
+   * Screening run for 老周's search: coarser sweep, shorter settles. Close to
+   * the real thing, about half the cost; the final build is always re-run in full.
+   */
+  quick?: boolean;
+  /** Extra sweep points, rpm, so a target speed is measured rather than interpolated. */
+  extraPoints?: number[];
+  /** Sweep only these points (screening runs that only care about a few speeds). */
+  onlyPoints?: number[];
 }
 
 export type AcceptancePhase = 'start' | 'idle' | 'freeRev' | 'sweep' | 'endurance' | 'overrun' | 'done';
@@ -130,8 +139,13 @@ export function runAcceptance(
   const sweepFrom = Math.max(plan.sweepFrom ?? 2000, Math.ceil((ecu.idleRpm + 600) / 500) * 500);
   const sweepTo = limiter - 200;
   const sweepPoints: number[] = [];
-  for (let r = sweepFrom; r <= sweepTo; r += 500) sweepPoints.push(r);
+  const sweepStep = plan.quick ? 1000 : 500;
+  for (let r = sweepFrom; r <= sweepTo; r += sweepStep) sweepPoints.push(r);
   if (sweepPoints.length > 0 && sweepTo - sweepPoints[sweepPoints.length - 1]! > 200) sweepPoints.push(sweepTo);
+  for (const r of plan.extraPoints ?? []) if (r >= sweepFrom && r <= sweepTo && !sweepPoints.includes(r)) sweepPoints.push(r);
+  if (plan.onlyPoints) sweepPoints.splice(0, sweepPoints.length, ...plan.onlyPoints.filter((r) => r >= sweepFrom && r <= sweepTo));
+  sweepPoints.sort((a, b) => a - b);
+  const q = plan.quick ? 0.6 : 1;
 
   // Rough cost of each phase in sim seconds, for the progress bar.
   const cost = {
@@ -280,11 +294,12 @@ export function runAcceptance(
   for (let i = 0; i < sweepPoints.length; i++) {
     const rpm = sweepPoints[i]!;
     core.controls.brakeRpm = rpm;
+    // Settles stay full: knock retard needs them, and short ones read optimistic.
     if (!run(i === 0 ? 1.5 : 0.7)) return finish();
     let sum = 0;
     let n = 0;
     let lastIndex = core.lastCycle?.index ?? -1;
-    const ok = run(0.4, () => {
+    const ok = run(0.4 * q, () => {
       const c = core.lastCycle;
       if (c && c.index !== lastIndex) {
         lastIndex = c.index;

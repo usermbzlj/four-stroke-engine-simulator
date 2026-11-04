@@ -18,6 +18,15 @@ import {
 } from '../sim/config';
 import { type AcceptancePlan, type AcceptanceResult, hpOf, torqueAt } from './acceptance';
 import type { PartId } from './parts';
+import type { GoalKind } from '../mentor/goals';
+
+/** What a check asks for, in a form 老周's search can aim at. */
+export interface CheckSpec {
+  goal?: { kind: GoalKind; value: number; rpm?: number };
+  /** ECU settings the customer fixed. */
+  lock?: Partial<EcuConfig>;
+  mufflers?: MufflerType[];
+}
 
 export interface CheckCtx {
   config: EngineConfig;
@@ -39,6 +48,7 @@ export interface Check {
   eval: (ctx: CheckCtx) => CheckOutcome;
   /** Where the target sits on a dyno chart, if it is a curve target. */
   mark?: { rpm?: number; torque?: number; hp?: number };
+  spec?: CheckSpec;
 }
 
 const f1 = (v: number): string => v.toFixed(1);
@@ -48,17 +58,18 @@ const m1 = (v: number): string => (Math.floor(v * 10 + 1e-9) / 10).toFixed(1);
 const c1 = (v: number): string => (Math.ceil(v * 10 - 1e-9) / 10).toFixed(1);
 const rpmText = (v: number): string => Math.round(v).toLocaleString('en-US');
 
-function test(label: string, judge: (r: AcceptanceResult) => CheckOutcome, mark?: Check['mark']): Check {
+function test(label: string, judge: (r: AcceptanceResult) => CheckOutcome, mark?: Check['mark'], spec?: CheckSpec): Check {
   return {
     label,
     needsTest: true,
     eval: ({ result }) => (result ? judge(result) : { pass: null, actual: '待验收' }),
     ...(mark ? { mark } : {}),
+    ...(spec ? { spec } : {}),
   };
 }
 
-function rule(label: string, judge: (ctx: CheckCtx) => CheckOutcome): Check {
-  return { label, needsTest: false, eval: judge };
+function rule(label: string, judge: (ctx: CheckCtx) => CheckOutcome, spec?: CheckSpec): Check {
+  return { label, needsTest: false, eval: judge, ...(spec ? { spec } : {}) };
 }
 
 export const C = {
@@ -71,58 +82,58 @@ export const C = {
     test(`怠速稳，最低不掉到 ${rpmText(minRpm)} rpm 以下`, (r) => ({
       pass: r.started && r.idle !== null && r.idle.min >= minRpm,
       actual: r.idle ? (r.idle.min <= 0 ? '熄火了' : `最低 ${rpmText(r.idle.min)}`) : '—',
-    })),
+    }), undefined, { goal: { kind: 'idleMin', value: minRpm } }),
   peakHp: (hp: number): Check =>
-    test(`最大功率 ≥ ${f1(hp)} hp`, (r) => ({ pass: r.peakHp >= hp, actual: `${m1(r.peakHp)} hp` }), { hp }),
+    test(`最大功率 ≥ ${f1(hp)} hp`, (r) => ({ pass: r.peakHp >= hp, actual: `${m1(r.peakHp)} hp` }), { hp }, { goal: { kind: 'peakHp', value: hp } }),
   peakTorque: (nm: number): Check =>
-    test(`最大扭矩 ≥ ${f1(nm)} Nm`, (r) => ({ pass: r.peakTorque >= nm, actual: `${m1(r.peakTorque)} Nm` }), { torque: nm }),
+    test(`最大扭矩 ≥ ${f1(nm)} Nm`, (r) => ({ pass: r.peakTorque >= nm, actual: `${m1(r.peakTorque)} Nm` }), { torque: nm }, { goal: { kind: 'peakTorque', value: nm } }),
   torqueAt: (rpm: number, nm: number): Check =>
     test(`${rpmText(rpm)} rpm 扭矩 ≥ ${f1(nm)} Nm`, (r) => {
       const v = torqueAt(r.curve, rpm);
       return { pass: v >= nm, actual: `${m1(v)} Nm` };
-    }, { rpm, torque: nm }),
+    }, { rpm, torque: nm }, { goal: { kind: 'torqueAt', value: nm, rpm } }),
   hpAt: (rpm: number, hp: number): Check =>
     test(`${rpmText(rpm)} rpm 功率 ≥ ${f1(hp)} hp`, (r) => {
       const v = hpOf(rpm, torqueAt(r.curve, rpm));
       return { pass: v >= hp, actual: `${m1(v)} hp` };
-    }, { rpm, hp }),
+    }, { rpm, hp }, { goal: { kind: 'hpAt', value: hp, rpm } }),
   freeRev: (seconds: number): Check =>
     test(`空轰到红线 ≤ ${seconds.toFixed(2)} 秒`, (r) => ({
       pass: r.freeRevTime !== null && r.freeRevTime <= seconds,
       // Lower is better here, so round up for display.
       actual: r.freeRevTime === null ? '没轰上去' : `${(Math.ceil(r.freeRevTime * 100 - 1e-9) / 100).toFixed(2)} 秒`,
-    })),
-  pops: (n: number): Check => test(`收油放炮 ≥ ${n} 响`, (r) => ({ pass: r.pops >= n, actual: `${r.pops} 响` })),
+    }), undefined, { goal: { kind: 'freeRev', value: seconds } }),
+  pops: (n: number): Check => test(`收油放炮 ≥ ${n} 响`, (r) => ({ pass: r.pops >= n, actual: `${r.pops} 响` }), undefined, { goal: { kind: 'pops', value: n } }),
   piston: (maxPct: number): Check =>
     test(`活塞损伤 ≤ ${maxPct}%`, (r) => ({
       pass: r.pistonDamage * 100 <= maxPct,
       actual: `${c1(r.pistonDamage * 100)}%`,
-    })),
+    }), undefined, { goal: { kind: 'piston', value: maxPct } }),
   coolant: (maxC: number): Check =>
-    test(`水温不超过 ${maxC} °C`, (r) => ({ pass: r.coolantMax <= maxC, actual: `最高 ${r.coolantMax.toFixed(0)} °C` })),
+    test(`水温不超过 ${maxC} °C`, (r) => ({ pass: r.coolantMax <= maxC, actual: `最高 ${r.coolantMax.toFixed(0)} °C` }), undefined, { goal: { kind: 'coolant', value: maxC } }),
   rodFatigue: (maxPct: number): Check =>
     test(`连杆疲劳 ≤ ${maxPct}%`, (r) => ({
       pass: r.rodFatigue * 100 <= maxPct,
       actual: `${c1(r.rodFatigue * 100)}%`,
-    })),
+    }), undefined, { goal: { kind: 'rod', value: maxPct } }),
   knockSensorOff: (): Check =>
-    rule('爆震控制保持关闭（传感器坏了）', ({ ecu }) => ({ pass: !ecu.knockControl, actual: ecu.knockControl ? '开着' : '关' })),
+    rule('爆震控制保持关闭（传感器坏了）', ({ ecu }) => ({ pass: !ecu.knockControl, actual: ecu.knockControl ? '开着' : '关' }), { lock: { knockControl: false } }),
   octaneMax: (ron: number): Check =>
-    rule(`只加 ${ron} 号油（或更低）`, ({ config }) => ({ pass: config.fuelOctane <= ron, actual: `${config.fuelOctane} 号` })),
+    rule(`只加 ${ron} 号油（或更低）`, ({ config }) => ({ pass: config.fuelOctane <= ron, actual: `${config.fuelOctane} 号` }), { goal: { kind: 'octaneMax', value: ron } }),
   muffler: (allowed: MufflerType[]): Check =>
     rule(`消音器：${allowed.map((m) => MUFFLER_TEXT[m]).join(' 或 ')}`, ({ config }) => ({
       pass: allowed.includes(config.muffler),
       actual: MUFFLER_TEXT[config.muffler],
-    })),
+    }), { mufflers: allowed }),
   limiterMin: (rpm: number): Check =>
-    rule(`断火转速 ≥ ${rpmText(rpm)}`, ({ ecu }) => ({ pass: ecu.limiterRpm >= rpm, actual: rpmText(ecu.limiterRpm) })),
+    rule(`断火转速 ≥ ${rpmText(rpm)}`, ({ ecu }) => ({ pass: ecu.limiterRpm >= rpm, actual: rpmText(ecu.limiterRpm) }), { goal: { kind: 'limiterMin', value: rpm } }),
   limiterMax: (rpm: number): Check =>
-    rule(`断火转速 ≤ ${rpmText(rpm)}`, ({ ecu }) => ({ pass: ecu.limiterRpm <= rpm, actual: rpmText(ecu.limiterRpm) })),
+    rule(`断火转速 ≤ ${rpmText(rpm)}`, ({ ecu }) => ({ pass: ecu.limiterRpm <= rpm, actual: rpmText(ecu.limiterRpm) }), { goal: { kind: 'limiterMax', value: rpm } }),
   ccMax: (cc: number): Check =>
     rule(`排量 ≤ ${cc} cc`, ({ config }) => {
       const v = displacementCc(config);
       return { pass: v <= cc + 0.5, actual: `${v.toFixed(0)} cc` };
-    }),
+    }, { goal: { kind: 'ccMax', value: cc } }),
 };
 
 export const MUFFLER_TEXT: Record<MufflerType, string> = { stock: '原厂', sport: '运动', open: '直通' };

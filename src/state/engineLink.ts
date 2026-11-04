@@ -192,6 +192,11 @@ export function resetStand(): void {
   useLive.getState().clearFeed();
 }
 
+/** Swap in a fresh piston and rod: wear back to zero, engine keeps running. */
+export function renewParts(): void {
+  send({ type: 'renew' });
+}
+
 /** Fit new parts after a failure. */
 export function restoreEngine(): void {
   send({ type: 'restore' });

@@ -520,6 +520,10 @@ kbd {
   font-weight: 500;
   color: var(--muted);
 }
+.readouts-renew {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
 .reading-note {
   white-space: nowrap;
   overflow: hidden;
@@ -2343,5 +2347,233 @@ button.mode:hover {
   }
   .help dl > div {
     grid-template-columns: 90px 1fr;
+  }
+}
+
+/* ---- 老周's brief ---------------------------------------------------------- */
+
+.quest {
+  width: min(640px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.quest-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.quest-head h2 {
+  margin: 0 0 4px;
+  font-size: 1.25rem;
+}
+.quest-head p {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+.quest-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.quest-sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.quest-sec h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.quest-goals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.quest-goal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--raised);
+}
+.quest-goal-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quest-dir {
+  color: var(--muted);
+  font-family: var(--num);
+}
+.quest-num {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.quest-num input {
+  width: 84px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--num);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+.quest-num--rpm input {
+  width: 72px;
+}
+.quest-num small {
+  min-width: 2.2em;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.quest-must {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.quest-must.is-on {
+  border-color: var(--mentor);
+  color: var(--mentor);
+}
+.quest-x {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+.quest-x:hover {
+  color: var(--ink);
+}
+.quest-add {
+  display: flex;
+  gap: 8px;
+}
+.quest-add select {
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+.quest-note {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--faint);
+}
+.quest-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.quest-chip {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.quest-chip small {
+  margin-left: 2px;
+  font-size: 0.75rem;
+  color: var(--faint);
+}
+.quest-chip.is-on {
+  border-color: rgba(127, 209, 185, 0.6);
+  background: rgba(127, 209, 185, 0.12);
+  color: var(--ink);
+}
+.quest-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+.quest-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.quest-bar {
+  height: 4px;
+  margin: 2px 0 4px;
+  border-radius: 2px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.quest-bar i {
+  display: block;
+  height: 100%;
+  background: var(--mentor);
+  transition: width 0.3s linear;
+}
+.quest-count {
+  margin: 0 0 6px !important;
+  font-size: 0.78rem;
+  color: var(--faint);
+}
+.quest-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  margin-bottom: 6px;
+}
+.quest-table td {
+  padding: 2px 4px 2px 0;
+  white-space: nowrap;
+}
+.quest-table td:first-child {
+  width: 100%;
+  white-space: normal;
+  color: var(--muted);
+}
+.quest-table .num {
+  font-family: var(--num);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.quest-table tr.is-met td:last-child {
+  color: var(--good);
+}
+.quest-table tr.is-miss td:last-child {
+  color: var(--knock);
+}
+.quest-log {
+  margin: 0 0 8px !important;
+  min-height: 7.5em;
+}
+.quest-log li {
+  line-height: 1.25;
+}
+@media (max-width: 560px) {
+  .quest-goal {
+    flex-wrap: wrap;
+  }
+  .quest-goal-name {
+    flex-basis: 100%;
   }
 }

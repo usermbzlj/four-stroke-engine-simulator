@@ -19,6 +19,7 @@
     "bench": "tsx scripts/bench.mts",
     "render": "tsx scripts/render.mts",
     "jobs": "tsx scripts/jobs.mts",
+    "goals": "tsx scripts/goals.mts",
     "deploy": "npm run build && node scripts/deploy-pages.mjs"
   },
   "dependencies": {

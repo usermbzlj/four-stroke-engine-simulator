@@ -1,4 +1,5 @@
 import { useControls } from '../state/controlStore';
+import { renewParts } from '../state/engineLink';
 import { useLive } from '../state/liveStore';
 
 interface ReadingProps {
@@ -65,6 +66,15 @@ export function Readouts(): React.ReactElement {
       <div className="readouts-group">
         <Reading label="活塞损伤" value={s ? (s.pistonDamage * 100).toFixed(1) : '—'} unit="%" tone={s && s.pistonDamage > 0.3 ? 'alarm' : undefined} note={null} />
         <Reading label="连杆疲劳" value={s ? (s.rodFatigue * 100).toFixed(1) : '—'} unit="%" tone={s && s.rodFatigue > 0.3 ? 'alarm' : undefined} note={null} />
+        <button
+          type="button"
+          className="btn btn--small readouts-renew"
+          disabled={!s || s.failure !== null || (s.pistonDamage < 0.0005 && s.rodFatigue < 0.0005)}
+          onClick={renewParts}
+          title="换上新活塞和新连杆，损伤和疲劳清零。只换磨损件，不改规格，不花零件钱。"
+        >
+          换新活塞连杆
+        </button>
       </div>
     </div>
   );

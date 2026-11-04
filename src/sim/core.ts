@@ -510,6 +510,13 @@ export class EngineCore {
     this.resetGas();
   }
 
+  /** Fresh piston and rod, everything else as it is. */
+  renew(): void {
+    this.pistonDamage = 0;
+    this.rodFatigue = 0;
+    this.knockRetard = 0;
+  }
+
   /** Geometry changes only make sense with the crank stopped. */
   rebuild(config: EngineConfig): void {
     this.setConfig(config);

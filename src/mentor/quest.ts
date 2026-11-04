@@ -1,0 +1,264 @@
+/**
+ * The player hands 老周 a brief; he works through builds on private engines
+ * (the live bench keeps running), then fits the best one he found.
+ */
+
+import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import { currentJob } from '../game/session';
+import { buildCost, changedParts, money, PARTS, type PartId } from '../game/parts';
+import { useBench } from '../state/benchStore';
+import type { EcuConfig, EngineConfig } from '../sim/config';
+import { crankForMe, mentorEdit } from './actions';
+import { useLive } from '../state/liveStore';
+import { briefForJob, effectiveGoals, gap, GOALS, type Brief, type Goal } from './goals';
+import { openPool, type Pool } from './pool';
+import { ctxOf, search, summary, type Tried } from './search';
+import { addDespair, say, useMentor } from './store';
+
+export interface Draft {
+  goals: Goal[];
+  parts: PartId[];
+  ecu: boolean;
+}
+
+export interface GoalRow {
+  goal: Goal;
+  start: number | null;
+  best: number | null;
+  met: boolean;
+}
+
+export interface QuestRun {
+  stage: string;
+  log: string[];
+  tried: number;
+  budget: number;
+  rows: GoalRow[];
+  survived: boolean;
+  cost: number;
+  stopping: boolean;
+}
+
+interface QuestState {
+  /** Brief editor open. */
+  editing: boolean;
+  /** The sandbox brief, kept between visits. */
+  sandbox: Draft | null;
+  /** Briefs edited for a job this session. */
+  jobs: Record<string, Draft>;
+  run: QuestRun | null;
+  /** Build before 老周's last fit, for undo. */
+  undo: { config: EngineConfig; ecu: EcuConfig } | null;
+}
+
+export const useQuest = create<QuestState>()(
+  persist(() => ({ editing: false, sandbox: null, jobs: {}, run: null, undo: null }) as QuestState, {
+    name: 'engine-bench:quest',
+    storage: createJSONStorage(() => localStorage),
+    partialize: (s) => ({ sandbox: s.sandbox }),
+  }),
+);
+
+const ALL_PARTS = PARTS.map((p) => p.id);
+
+/** What the editor opens with. */
+export function draftNow(): Draft {
+  const q = useQuest.getState();
+  const job = currentJob();
+  if (job) {
+    if (q.jobs[job.id]) return q.jobs[job.id]!;
+    const b = briefForJob(job, useBench.getState().baseline.config);
+    return { goals: b.goals, parts: b.parts, ecu: true };
+  }
+  return (
+    q.sandbox ?? {
+      goals: [
+        { kind: 'peakHp', value: 20, must: true },
+        { kind: 'budget', value: 2000, must: false },
+      ],
+      parts: ALL_PARTS.filter((p) => p !== 'fuel'),
+      ecu: true,
+    }
+  );
+}
+
+export function saveDraft(d: Draft): void {
+  const job = currentJob();
+  if (job) useQuest.setState({ jobs: { ...useQuest.getState().jobs, [job.id]: d } });
+  else useQuest.setState({ sandbox: d });
+}
+
+export function jobDraft(): Draft | null {
+  const job = currentJob();
+  if (!job) return null;
+  const b = briefForJob(job, useBench.getState().baseline.config);
+  return { goals: b.goals, parts: b.parts, ecu: true };
+}
+
+export function lockedParts(): PartId[] {
+  return currentJob()?.locked ?? [];
+}
+
+function briefFrom(d: Draft): Brief {
+  const job = currentJob();
+  const b = useBench.getState();
+  const base = job ? briefForJob(job, b.baseline.config) : null;
+  return {
+    goals: d.goals,
+    parts: d.parts.filter((p) => !(job?.locked ?? []).includes(p)),
+    ecu: d.ecu,
+    lock: base?.lock ?? {},
+    mufflers: base?.mufflers ?? null,
+    plan: job ? job.plan : { bench: b.bench },
+    baseline: b.baseline.config,
+  };
+}
+
+function rows(goals: Goal[], start: Tried | null, best: Tried | null): GoalRow[] {
+  return effectiveGoals(goals).map((g) => ({
+    goal: g,
+    start: start ? GOALS[g.kind].measure(g, ctxOf(start)) : null,
+    best: best ? GOALS[g.kind].measure(g, ctxOf(best)) : null,
+    met: best ? (gap(g, ctxOf(best)) ?? 1) <= 0 : false,
+  }));
+}
+
+let pool: Pool | null = null;
+let stopFlag = false;
+/** Bumped per run, so a run that was abandoned cannot report into a newer one. */
+let runId = 0;
+
+const patch = (p: Partial<QuestRun>): void => {
+  const r = useQuest.getState().run;
+  if (r) useQuest.setState({ run: { ...r, ...p } });
+};
+
+export function stopQuest(): void {
+  stopFlag = true;
+  patch({ stopping: true, stage: '收尾：把目前最好的那套再正式跑一遍' });
+}
+
+export function abandonQuest(): void {
+  stopFlag = true;
+  runId++;
+  pool?.close();
+  pool = null;
+  useQuest.setState({ run: null });
+  say('quest', 'say', '行，不弄了。你的台架我一点没动。');
+}
+
+/** Put the build from before 老周's last fit back. */
+export function undoQuest(): void {
+  const u = useQuest.getState().undo;
+  if (!u) return;
+  fit(u.config, u.ecu);
+  useQuest.setState({ undo: null });
+  say('quest', 'say', '换回去了，还是你原来那套。');
+}
+
+function fit(config: EngineConfig, ecu: EcuConfig): void {
+  mentorEdit(() => {
+    const b = useBench.getState();
+    b.setConfig(config);
+    b.setEcu(ecu);
+  });
+}
+
+export async function startQuest(d: Draft): Promise<void> {
+  if (useQuest.getState().run) return;
+  saveDraft(d);
+  const brief = briefFrom(d);
+  if (brief.goals.length === 0) return;
+  const b = useBench.getState();
+  stopFlag = false;
+  const id = ++runId;
+  const mine = openPool();
+  pool = mine;
+  const budget = Math.max(150, Math.min(300, 60 + 40 * mine.width));
+  useQuest.setState({
+    editing: false,
+    run: { stage: '准备', log: [], tried: 0, budget, rows: rows(brief.goals, null, null), survived: true, cost: 0, stopping: false },
+  });
+  useMentor.getState().set({ open: true });
+  say('quest', 'say', `交给我。我在后面的台架上一套一套地试，${mine.width} 台同时跑，你这边照常玩。`);
+
+  let start: Tried | null = null;
+  const from = { config: b.config, ecu: b.ecu, wish: b.ecu.limiterRpm };
+  try {
+    const out = await search(
+      brief,
+      from,
+      {
+        evaluate: (jobs) => mine.evaluate(jobs),
+        width: mine.width,
+        log: (t) => {
+          const r = useQuest.getState().run;
+          if (r) patch({ log: [...r.log, t].slice(-60) });
+        },
+        stage: (t) => patch({ stage: t }),
+        progress: (best, tried) => {
+          start ??= best;
+          patch({ tried, rows: rows(brief.goals, start, best), survived: best.score.survived, cost: best.cost });
+        },
+        stopped: () => stopFlag || id !== runId,
+      },
+      budget,
+    );
+    if (id === runId) finish(brief, d, out.start, out.verified, out.tried);
+  } catch (err) {
+    if (id !== runId) return; // abandoned
+    useQuest.setState({ run: null });
+    say('quest', 'warn', `出岔子了：${err instanceof Error ? err.message : String(err)}。台架没动。`);
+  } finally {
+    mine.close();
+    if (pool === mine) pool = null;
+  }
+}
+
+function finish(brief: Brief, d: Draft, start: Tried, v: Tried, tried: number): void {
+  const before = useBench.getState();
+  const goals = brief.goals;
+  const better = v.score.loss < start.score.loss - 1e-6;
+  useQuest.setState({ run: null });
+  if (!better) {
+    say('quest', 'warn', `试了 ${tried} 套，没有一套比你现在的好。${summary(goals, v)}。要么目标定得太狠，要么得放开更多零件让我动。`, {
+      head: '没找到更好的。',
+      actions: [{ label: '改目标', run: () => useQuest.setState({ editing: true }), primary: true }],
+    });
+    return;
+  }
+  useQuest.setState({ undo: { config: before.config, ecu: before.ecu } });
+  const parts = changedParts(before.baseline.config, v.config);
+  const changedNow = changedParts(before.config, v.config);
+  const block = changedNow.some((p) => p.block);
+  if (before.runs.length === 0 || before.runs.at(-1)?.label !== '老周前') before.addRun(start.result.curve, '老周前');
+  const wasRunning = useLive.getState().snapshot?.status === 'running';
+  fit(v.config, v.ecu);
+  useBench.getState().addRun(v.result.curve, '老周方案');
+  // Block parts stop the crank; start it again the way it was.
+  if (block && wasRunning) void crankForMe();
+
+  const cost = buildCost(brief.baseline, v.config);
+  const met = v.score.allMet;
+  const mustOk = v.score.mustMet;
+  const missed = effectiveGoals(goals).filter((g) => (gap(g, ctxOf(v)) ?? 0) > 0);
+  const ecuDiff = (Object.keys(v.ecu) as (keyof EcuConfig)[]).filter((k) => v.ecu[k] !== before.ecu[k]).length;
+  const what = [changedNow.length ? `换了${changedNow.map((p) => p.name).join('、')}` : '', ecuDiff ? `ECU 动了 ${ecuDiff} 项` : ''].filter(Boolean).join('，');
+  const head = met ? '全部达标。' : mustOk ? '必须的都达到了。' : '尽力了，还差一点。';
+  const tail = met ? '' : `没够上的：${missed.map((g) => GOALS[g.kind].name).join('、')}。${mustOk ? '' : '放开更多零件，或者把目标放低一点再试。'}`;
+  say(
+    'quest',
+    met ? 'good' : mustOk ? 'say' : 'warn',
+    `试了 ${tried} 套。${what || '参数微调'}，零件 ${money(cost)}${parts.length ? `（${parts.map((p) => p.name).join('、')}）` : ''}。正式跑一遍：${summary(goals, v)}。${tail}已经装上了，测功面板里有前后两条曲线。${block && wasRunning ? '动了缸体得停机装，我已经重新打着了。' : ''}`,
+    {
+      head,
+      actions: [
+        { label: '换回原来的', run: undoQuest },
+        ...(met ? [] : [{ label: '改目标再试', run: () => useQuest.setState({ editing: true }), primary: true }]),
+      ],
+    },
+  );
+  if (met) addDespair(-0.5);
+  saveDraft(d);
+}

@@ -18,6 +18,8 @@ export type HostCommand =
   | { type: 'bench'; bench: BenchConfig }
   /** Fit new parts after a failure. */
   | { type: 'restore' }
+  /** Fresh piston and rod on a running engine (wear only, not a failure). */
+  | { type: 'renew' }
   | { type: 'volume'; volume: number };
 
 export type EngineMessage =

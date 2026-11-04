@@ -54,6 +54,9 @@ export class EngineRunner {
       case 'restore':
         core.restore();
         break;
+      case 'renew':
+        core.renew();
+        break;
       case 'volume':
         if (this.synth) this.synth.volume = cmd.volume;
         break;

@@ -16,6 +16,7 @@ import { EventFeed } from './ui/EventFeed';
 import { FailureReport } from './ui/FailureReport';
 import { HelpOverlay } from './ui/HelpOverlay';
 import { AcceptanceDialog } from './ui/job/AcceptanceDialog';
+import { QuestDialog } from './ui/QuestDialog';
 import { JobBoard } from './ui/job/JobBoard';
 import { JobCard } from './ui/job/JobCard';
 import { LiveStrip } from './ui/LiveStrip';
@@ -165,6 +166,7 @@ function Bench(): React.ReactElement {
 
       {failure && <FailureReport failure={failure} />}
       <AcceptanceDialog />
+      <QuestDialog />
     </div>
   );
 }

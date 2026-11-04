@@ -6,6 +6,8 @@ export interface AcceptanceRequest {
   config: EngineConfig;
   ecu: EcuConfig;
   plan: AcceptancePlan;
+  /** No progress messages: 老周's search only wants the result. */
+  quiet?: boolean;
 }
 
 export type AcceptanceReply =
@@ -16,9 +18,9 @@ export type AcceptanceReply =
 const post = (msg: AcceptanceReply): void => (self as unknown as Worker).postMessage(msg);
 
 self.onmessage = (e: MessageEvent<AcceptanceRequest>) => {
-  const { id, config, ecu, plan } = e.data;
+  const { id, config, ecu, plan, quiet } = e.data;
   try {
-    const result = runAcceptance(config, ecu, plan, (progress) => post({ id, type: 'progress', progress }));
+    const result = runAcceptance(config, ecu, plan, quiet ? undefined : (progress) => post({ id, type: 'progress', progress }));
     post({ id, type: 'done', result });
   } catch (err) {
     post({ id, type: 'error', message: err instanceof Error ? err.message : String(err) });
