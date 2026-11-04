@@ -6,7 +6,7 @@
  */
 
 import { EngineCore } from '../../sim/core';
-import { MAP_LOAD, MAP_RPM, type EcuConfig, type EngineConfig, type EcuTable } from '../../sim/config';
+import { MAP_LOAD, MAP_RPM, type BenchConfig, type EcuConfig, type EngineConfig, type EcuTable } from '../../sim/config';
 
 /** Knock the piston shrugs off; trace knock at the limit is normal. */
 export const KNOCK_OK = 0.08;
@@ -16,7 +16,7 @@ export type TaskSpec =
   | { kind: 'lambda'; rpms: number[] }
   | { kind: 'cam'; rpms: number[] }
   | { kind: 'boost'; rpms: number[]; max: number }
-  | { kind: 'idle' };
+  | { kind: 'idle'; seed?: number; coolant?: number; bench?: BenchConfig; stress?: boolean };
 
 export interface ColumnResult {
   rpm: number;
@@ -36,10 +36,10 @@ export type TaskOut =
 const RATE = 24000;
 const DT = 1 / RATE;
 
-function warm(config: EngineConfig, ecu: EcuConfig): EngineCore | null {
-  const core = new EngineCore(config, ecu, undefined, 7);
-  core.coolantC = 88;
-  core.oilC = 88;
+function warm(config: EngineConfig, ecu: EcuConfig, seed = 7, coolant = 88, bench?: BenchConfig): EngineCore | null {
+  const core = new EngineCore(config, ecu, bench, seed);
+  core.coolantC = coolant;
+  core.oilC = coolant;
   core.controls.starter = true;
   for (let t = 0; t < 3 && core.status !== 'running'; t += 0.01) for (let i = 0; i < 240; i++) core.step(DT);
   core.controls.starter = false;
@@ -230,29 +230,43 @@ export function runTask(config: EngineConfig, ecu: EcuConfig, task: TaskSpec): T
       );
     }
     case 'idle': {
-      const core = warm(config, ecu);
+      // Plain: idle, one short blip. Stress: longer idle, a short blip and a
+      // full rev to near the limiter, each let go at once, the way people do.
+      const core = warm(config, ecu, task.seed ?? 7, task.coolant ?? 88, task.bench);
       if (!core) return { kind: 'idle', idleMin: 0, idleMax: 0, blipMin: 0, blipEnd: 0, stalled: true };
       let idleMin = Infinity;
       let idleMax = 0;
-      for (let i = 0; i < RATE * 2.5; i++) {
-        core.step(DT);
-        if (i % 240 === 0) {
-          const r = core.status === 'running' ? core.rpm : 0;
-          idleMin = Math.min(idleMin, r);
-          idleMax = Math.max(idleMax, r);
-        }
-      }
-      core.controls.throttle = 1;
-      for (let i = 0; i < RATE * 0.3; i++) core.step(DT);
-      core.controls.throttle = 0;
       let blipMin = Infinity;
       let stalled = false;
-      for (let i = 0; i < RATE * 2.7; i++) {
-        core.step(DT);
-        if (i % 240 === 0) {
-          if (core.status !== 'running') stalled = true;
-          blipMin = Math.min(blipMin, core.status === 'running' ? core.rpm : 0);
+      const watch = (seconds: number, idle: boolean): void => {
+        for (let i = 0; i < RATE * seconds; i++) {
+          core.step(DT);
+          if (i % 240 === 0) {
+            const r = core.status === 'running' ? core.rpm : 0;
+            if (r === 0) stalled = true;
+            if (idle) {
+              idleMin = Math.min(idleMin, r);
+              idleMax = Math.max(idleMax, r);
+            } else blipMin = Math.min(blipMin, r);
+          }
         }
+      };
+      const blip = (seconds: number, untilRpm: number): void => {
+        core.controls.throttle = 1;
+        for (let i = 0; i < RATE * seconds && core.rpm < untilRpm; i++) core.step(DT);
+        core.controls.throttle = 0;
+      };
+      watch(task.stress ? 5 : 2.5, true);
+      blip(0.3, Infinity);
+      watch(2.7, false);
+      if (task.stress && !stalled) {
+        watch(1, true);
+        blip(2, ecu.limiterRpm * 0.85);
+        watch(3.5, false);
+        core.controls.throttle = 0.25;
+        for (let i = 0; i < RATE * 0.6; i++) core.step(DT);
+        core.controls.throttle = 0;
+        watch(3, false);
       }
       return { kind: 'idle', idleMin, idleMax, blipMin: stalled ? 0 : blipMin, blipEnd: core.rpm, stalled };
     }

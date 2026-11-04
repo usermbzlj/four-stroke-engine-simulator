@@ -342,6 +342,7 @@ export function repair(b: Build, brief: Brief): Build {
     ...b.ecu,
     ...brief.lock,
     limiterRpm: Math.min(wish, safe),
+    ...(brief.idleCap ? { idleRpm: Math.min(b.ecu.idleRpm, brief.idleCap) } : {}),
   });
   // Vehicle parts the brief does not allow stay as they were.
   let vehicle = clampVehicle(b.vehicle);

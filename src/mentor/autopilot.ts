@@ -1,16 +1,20 @@
 /**
- * 老周 minding the bench by himself. When the engine stalls with 保护 on,
- * he does not just say so: he tries the usual cures on private engines,
- * fits the smallest one that holds, and starts it again.
+ * 老周 minding the bench by himself. When the engine stalls, he does not
+ * argue with what happened: he reproduces it under the bench's own
+ * conditions (and a few other days, warm and cold), tries the usual cures
+ * on private engines, fits the smallest one that holds in every case, and
+ * starts it again.
  */
 
+import { useGame } from '../game/store';
+import type { EcuConfig, EngineConfig } from '../sim/config';
 import { useBench } from '../state/benchStore';
-import { applyFix, crankForMe } from './actions';
+import { useLive } from '../state/liveStore';
+import { applyFix, crankForMe, mentorEdit } from './actions';
 import { stallVariants } from './engineer/engineer';
+import { idleVerdict, stressSpecs, verdictText, type IdleVerdict } from './engineer/idle';
 import { openPool } from './pool';
 import { say, useMentor } from './store';
-import type { EcuConfig } from '../sim/config';
-import { useGame } from '../game/store';
 
 let busy = false;
 
@@ -18,52 +22,66 @@ export function isRescuing(): boolean {
   return busy;
 }
 
+interface Cure {
+  text: string;
+  patch: Partial<EcuConfig>;
+  config?: Partial<EngineConfig>;
+}
+
 export async function rescueStall(reason = '熄火了'): Promise<void> {
   if (busy) return;
   busy = true;
-  const { config, ecu } = useBench.getState();
-  say('stall', 'warn', `${reason}。我在后面的台架上把几种治熄火的改法同时试一遍……`, { cooldown: 0, head: '老周接手：' });
+  const { config, ecu, bench } = useBench.getState();
+  const coolant = useLive.getState().snapshot?.coolantC ?? 88;
+  say('stall', 'warn', `${reason}。我照你台架现在的样子（水温 ${Math.round(coolant)} °C${bench.coolantConditioner ? '' : '，没接水温机'}）在后面复现，再换几个日子、冷车热车、轻轰猛轰都试一遍……`, {
+    cooldown: 0,
+    head: '老周接手：',
+  });
   const pool = openPool();
   try {
-    const variants = [{ text: '原样', patch: {} as Partial<EcuConfig> }, ...stallVariants(ecu)];
-    const outs = await Promise.all(variants.map((v) => pool.tasks(config, { ...ecu, ...v.patch }, [{ kind: 'idle' }])));
-    const rows = outs.map((o, i) => {
-      const r = o[0]!;
-      const e = { ...ecu, ...variants[i]!.patch };
-      const ok = r.kind === 'idle' && !r.stalled && r.blipMin >= Math.max(500, e.idleRpm * 0.55) && r.idleMin >= e.idleRpm * 0.7;
-      return { i, ok, r };
-    });
-    const base = rows[0]!;
-    if (base.ok) {
-      say('stall', 'say', '原样在后台跑是稳的，刚才多半是你操作太猛。我给你重新打着。', { cooldown: 0 });
-      await crankForMe();
-      return;
-    }
-    const pick = rows.slice(1).find((x) => x.ok);
+    const specs = stressSpecs({ bench, coolants: [...new Set([Math.round(coolant), 88, 50])] });
+    const base = await idleVerdict(pool.tasks, config, ecu, specs);
+    const fly = config.flywheelInertia;
+    const cures: Cure[] = [
+      ...stallVariants(ecu),
+      { text: `飞轮加重到 ${(fly + 0.006).toFixed(3)}（要换零件）`, patch: {}, config: { flywheelInertia: fly + 0.006 } },
+    ];
+    const verdicts: IdleVerdict[] = await Promise.all(cures.map((c) => idleVerdict(pool.tasks, { ...config, ...c.config }, { ...ecu, ...c.patch }, specs)));
+    // ECU-only cures first, smallest first; a part only if nothing else holds.
+    const holds = cures.map((c, i) => ({ c, v: verdicts[i]! })).filter(({ v }) => v.ok);
+    const pick = holds.find(({ c }) => !c.config) ?? holds[0];
+    const intro = base.ok
+      ? `后台 ${verdictText(base)}，可台架上确实熄了：说明它就在熄火的边上，留的余量不够。`
+      : `复现出来了：${verdictText(base)}。`;
     if (!pick) {
-      const best = rows.slice(1).reduce((a, b) => ((b.r.kind === 'idle' ? b.r.blipMin : 0) > (a.r.kind === 'idle' ? a.r.blipMin : 0) ? b : a));
-      say('stall', 'danger', `试了 ${variants.length - 1} 种改法都压不住。光调 ECU 不够，这台得换重一点的飞轮，或者凸轮别那么野。先按最好的那种（${variants[best.i]!.text}）装上。`, {
-        cooldown: 0,
-      });
-      applyFix({ label: variants[best.i]!.text, ecu: variants[best.i]!.patch });
+      const best = cures
+        .map((c, i) => ({ c, v: verdicts[i]! }))
+        .filter(({ c }) => !c.config)
+        .sort((a, b) => a.v.stalls - b.v.stalls || b.v.worstDip - a.v.worstDip)[0]!;
+      applyFix({ label: best.c.text, ecu: best.c.patch });
+      say('stall', 'danger', `${intro}试了 ${cures.length} 种改法，没有一种在所有情况下都压得住。先装上最好的（${best.c.text}，${verdictText(best.v)}）。要彻底稳，得换重一点的飞轮或者温和点的凸轮。`, { cooldown: 0 });
       await crankForMe();
       return;
     }
-    const v = variants[pick.i]!;
-    const r = pick.r.kind === 'idle' ? pick.r : null;
-    const before = ecu;
-    applyFix({ label: v.text, ecu: v.patch });
+    const before = { config, ecu };
+    if (pick.c.config) mentorEdit(() => useBench.getState().setConfig({ ...pick.c.config }));
+    applyFix({ label: pick.c.text, ecu: pick.c.patch });
     const ok = await crankForMe();
-    say(
-      'stall',
-      'good',
-      `找到了：${v.text}。后台轰油门再松，最低 ${Math.round(r?.blipMin ?? 0).toLocaleString('en-US')} 转，怠速稳在 ${Math.round(r?.idleMin ?? 0).toLocaleString('en-US')} 以上。已经改上${ok ? '，也重新打着了' : ''}。`,
-      {
-        cooldown: 0,
-        head: '熄火治好了。',
-        actions: [{ label: '改回去', run: () => applyFix({ label: '', ecu: Object.fromEntries(Object.keys(v.patch).map((k) => [k, before[k as keyof EcuConfig]])) as Partial<EcuConfig> }) }],
-      },
-    );
+    say('stall', 'good', `${intro}改法：${pick.c.text}。改完${verdictText(pick.v)}。已经装上${ok ? '，也重新打着了' : ''}。`, {
+      cooldown: 0,
+      head: '熄火治好了。',
+      actions: [
+        {
+          label: '改回去',
+          run: () =>
+            mentorEdit(() => {
+              const b = useBench.getState();
+              b.setConfig(before.config);
+              b.setEcu(before.ecu);
+            }),
+        },
+      ],
+    });
   } catch {
     // Pool closed or the page went away: nothing to do.
   } finally {

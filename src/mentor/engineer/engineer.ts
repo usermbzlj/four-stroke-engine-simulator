@@ -20,6 +20,7 @@ import { overallRatio, type VehicleConfig } from '../../sim/vehicle';
 import { effectiveGoals, eventsFor, gap, GOALS, planFor, quickPlanFor, score, type Brief, type Goal } from '../goals';
 import { rodStrengthFor, springFor } from '../advice';
 import { costOf, ctxOf, goalName, repair, search, summary, type Build, type EvalJob, type SearchHooks, type SearchOutcome, type Tried } from '../search';
+import { idleVerdict, stressSpecs, verdictText } from './idle';
 import { columnsFor, setColumn, wotFrom, type TaskOut, type TaskSpec } from './tasks';
 
 export interface EngineerHooks extends SearchHooks {
@@ -557,6 +558,41 @@ export async function engineer(brief: Brief, from: Build, hooks: EngineerHooks, 
       const [v2] = await run([safer], full);
       if (v2!.score.survived) verified = v2!;
     } else hooks.log('换个日子也稳。');
+  }
+
+  // Idle that holds once is not idle that holds: every day, warm and cold, blipped and revved.
+  if (!hooks.stopped() && brief.ecu && verified.score.survived) {
+    hooks.stage('怠速压力测试：不同日子、冷车热车、轻轰猛轰');
+    const specs = stressSpecs({ ...(brief.plan.bench ? { bench: { coolantConditioner: true, coolantSetpoint: 85, ...brief.plan.bench } } : {}) });
+    const v0 = await idleVerdict(hooks.tasks, verified.config, verified.ecu, specs);
+    if (v0.ok) hooks.log(`怠速压力测试：${verdictText(v0)}。稳。`);
+    else {
+      hooks.log(`怠速压力测试：${verdictText(v0)}。正式验收那一趟碰巧过了，这不算稳，接着治。`);
+      const fly = verified.config.flywheelInertia;
+      const variants: { text: string; patch: Partial<EcuConfig>; config?: Partial<EngineConfig> }[] = [
+        ...stallVariants(verified.ecu),
+        ...(has(brief, 'flywheel') ? [{ text: `飞轮加重到 ${(fly + 0.006).toFixed(3)}`, patch: {}, config: { flywheelInertia: fly + 0.006 } }] : []),
+        ...(has(brief, 'flywheel')
+          ? [{ text: `飞轮加重到 ${(fly + 0.006).toFixed(3)}，断油晚回 500 转`, patch: { overrunResumeAbove: verified.ecu.overrunResumeAbove + 500, overrunCutAbove: Math.max(verified.ecu.overrunCutAbove, verified.ecu.overrunResumeAbove + 800) }, config: { flywheelInertia: fly + 0.006 } }]
+          : []),
+      ];
+      const verdicts = await Promise.all(variants.map((x) => idleVerdict(hooks.tasks, { ...verified.config, ...x.config }, { ...verified.ecu, ...x.patch }, specs)));
+      // Smallest change that holds everywhere; then the one that holds best.
+      const order = variants.map((x, i) => ({ x, v: verdicts[i]! })).sort((a, b2) => Number(b2.v.ok) - Number(a.v.ok) || a.v.stalls - b2.v.stalls);
+      let fixed = false;
+      for (const { x, v } of order.slice(0, 3)) {
+        if (v.stalls >= v0.stalls && v.worstDip <= v0.worstDip) break;
+        const [t] = await run([{ ...verified, config: { ...verified.config, ...x.config }, ecu: { ...verified.ecu, ...x.patch } }], full);
+        const keeps = t!.score.survived && (t!.score.mustMet || !verified.score.mustMet);
+        if (keeps) {
+          hooks.log(`${x.text}：${verdictText(v)}，正式验收 ${summary(goals, t!)}。`);
+          verified = t!;
+          fixed = v.ok;
+          break;
+        }
+      }
+      if (!fixed) hooks.log('光调 ECU 压不住所有情况：飞轮太轻或者凸轮太野。要更稳，放开飞轮或凸轮让我换。');
+    }
   }
 
   // Never hand back worse than what came in.

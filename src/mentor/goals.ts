@@ -8,7 +8,7 @@
 import { hpOf, torqueAt, type AcceptancePlan, type AcceptanceResult } from '../game/acceptance';
 import type { Job } from '../game/jobs';
 import { PARTS, type PartId } from '../game/parts';
-import { displacementCc, type EcuConfig, type EngineConfig, type MufflerType } from '../sim/config';
+import { clampEcu, displacementCc, PRESETS, type EcuConfig, type EngineConfig, type MufflerType } from '../sim/config';
 import { RACE_EVENTS, type RaceEventId, type RaceResult } from '../sim/race';
 import { VEHICLE_PARTS, clampVehicle, type VehicleConfig, type VehiclePartId } from '../sim/vehicle';
 
@@ -318,6 +318,14 @@ export interface Brief {
   vehicleBaseline: VehicleConfig;
   /** Vehicle parts 老周 may change. */
   vehicleParts: VehiclePartId[];
+  /** Highest idle he may set: a 3,000 rpm idle is not an idle. */
+  idleCap?: number;
+}
+
+/** Idle ceiling for a brief: a little above where it started, or above what the goals ask for. */
+export function idleCapFor(goals: Goal[], startIdle: number): number {
+  const want = Math.max(0, ...goals.filter((g) => g.kind === 'idleMin' || g.kind === 'blipMin').map((g) => g.value));
+  return Math.max(startIdle + 600, want + 600);
 }
 
 /** Timed runs a set of goals needs. */
@@ -425,7 +433,9 @@ export function briefForJob(job: Job, baseline: EngineConfig): Brief {
   take(job.bonus.spec, false);
   goals.push({ kind: 'budget', value: job.budget, must: false });
   const vehicle = clampVehicle(job.vehicle);
+  const startIdle = clampEcu({ ...(PRESETS.find((p) => p.id === job.presetId) ?? PRESETS[0]!).ecu, ...job.ecu }).idleRpm;
   return {
+    idleCap: idleCapFor(goals, Math.max(startIdle, 1100)),
     vehicle,
     vehicleBaseline: vehicle,
     vehicleParts: VEHICLE_PARTS.filter((p) => !job.locked?.includes(p.id as never)).map((p) => p.id),

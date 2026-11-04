@@ -14,7 +14,7 @@ import { useBench } from '../state/benchStore';
 import type { EcuConfig, EngineConfig } from '../sim/config';
 import { crankForMe, mentorEdit } from './actions';
 import { useLive } from '../state/liveStore';
-import { briefForJob, effectiveGoals, gap, GOALS, type Brief, type Goal } from './goals';
+import { briefForJob, effectiveGoals, gap, GOALS, idleCapFor, type Brief, type Goal } from './goals';
 import { openPool, type Pool } from './pool';
 import { costOf, ctxOf, summary, type Tried } from './search';
 import { addDespair, say, useMentor } from './store';
@@ -122,6 +122,7 @@ function briefFrom(d: Draft): Brief {
     vehicle: b.vehicle,
     vehicleBaseline: baseVehicle(b.baseline, b.vehicle),
     vehicleParts: d.vehicleParts ?? ALL_VEHICLE,
+    idleCap: idleCapFor(d.goals, Math.max(b.ecu.idleRpm, b.baseline.ecu.idleRpm)),
   };
 }
 
