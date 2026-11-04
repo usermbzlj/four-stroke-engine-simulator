@@ -179,7 +179,7 @@ function Bench(): React.ReactElement {
         {stage === 'track' ? <RacePanel /> : <Scope />}
 
         {drawer && (
-          <aside className="drawer" aria-label={DRAWERS.find((d) => d.id === drawer)?.label}>
+          <aside className={`drawer${drawer === 'ecu' || drawer === 'garage' ? ' drawer--wide' : ''}`} aria-label={DRAWERS.find((d) => d.id === drawer)?.label}>
             <div className="drawer-top">
               <header className="drawer-head">
                 <nav className="drawer-tabs" aria-label="面板">

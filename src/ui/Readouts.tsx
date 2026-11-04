@@ -1,3 +1,4 @@
+import { useBench } from '../state/benchStore';
 import { useControls } from '../state/controlStore';
 import { renewParts } from '../state/engineLink';
 import { useLive } from '../state/liveStore';
@@ -28,6 +29,8 @@ function Reading({ label, value, unit, note, tone }: ReadingProps): React.ReactE
 export function Readouts(): React.ReactElement {
   const s = useLive((x) => x.snapshot);
   const brake = useControls((x) => x.brakeMode === 'speed');
+  const turbo = useBench((x) => x.config.turboSize > 0);
+  const vvt = useBench((x) => x.config.vvtRange > 0);
   const c = s?.cycle ?? null;
   const running = s?.status === 'running';
   const torque = c ? (brake ? c.brakeTorque : c.torque) : 0;
@@ -57,6 +60,12 @@ export function Readouts(): React.ReactElement {
         <Reading label="空燃比 λ" value={fmt(c?.misfire ? undefined : c?.lambda, 2)} note={s ? `目标 ${s.lambdaTarget.toFixed(2)}` : undefined} />
         <Reading label="进气压力" value={s ? s.mapKpa.toFixed(0) : '—'} unit="kPa" note={null} />
         <Reading label="充气效率" value={fmt(c ? c.ve * 100 : undefined)} unit="%" note={null} />
+        <Reading label="喷油嘴" value={fmt(c ? c.injDuty * 100 : undefined)} unit="%" tone={c && running && c.injDuty > 0.88 ? 'alarm' : undefined} note={null} />
+        {turbo ? (
+          <Reading label="增压" value={s ? s.boostKpa.toFixed(0) : '—'} unit="kPa" note={s ? `涡轮 ${(s.turboN * 100).toFixed(0)}%` : undefined} />
+        ) : vvt ? (
+          <Reading label="进气凸轮" value={s ? s.camPhase.toFixed(0) : '—'} unit="°" note={null} />
+        ) : null}
       </div>
       <div className="readouts-group">
         <Reading label="排温" value={s ? s.egtC.toFixed(0) : '—'} unit="°C" tone={s && s.egtC > 850 ? 'hot' : undefined} note={null} />

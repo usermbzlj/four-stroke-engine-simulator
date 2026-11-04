@@ -2878,3 +2878,165 @@ button.mode:hover {
 .ledger .is-out {
   color: var(--knock);
 }
+
+/* ---- ECU tabs and map editors ------------------------------------------------ */
+
+.sheet-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.sheet-tabs button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+.sheet-tabs button.is-on {
+  border-color: var(--heat);
+  color: var(--ink);
+  background: var(--raised);
+}
+.tbl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tbl-grid-wrap {
+  display: flex;
+  gap: 4px;
+}
+.tbl-ylabel {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  color: var(--faint);
+  font-size: 0.7rem;
+  text-align: center;
+}
+.tbl-body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+.tbl-grid {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: var(--num);
+  font-size: 0.68rem;
+  user-select: none;
+}
+.tbl-grid th {
+  width: 26px;
+  color: var(--faint);
+  font-weight: 500;
+  text-align: right;
+  padding-right: 3px;
+}
+.tbl-grid td {
+  height: 22px;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  text-align: center;
+  cursor: cell;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.tbl-grid td.is-off {
+  opacity: 0.3;
+}
+.tbl-grid td.is-sel {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+.tbl-xaxis th {
+  text-align: center;
+  padding: 2px 0 0;
+}
+.tbl-cursor-layer {
+  position: absolute;
+  top: 0;
+  left: 29px;
+  right: 0;
+  bottom: 18px;
+  pointer-events: none;
+}
+.tbl-cursor {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid var(--heat);
+  border-radius: 50%;
+  box-shadow: 0 0 8px var(--heat);
+}
+.tbl-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.tbl-info {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+.tbl-input {
+  width: 64px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.curve-bars {
+  display: grid;
+  grid-template-columns: repeat(16, minmax(0, 1fr));
+  gap: 2px;
+  height: 130px;
+}
+.curve-bar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 0 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  cursor: pointer;
+  color: var(--muted);
+}
+.curve-bar i {
+  width: 100%;
+  background: linear-gradient(0deg, rgba(255, 122, 26, 0.25), rgba(255, 122, 26, 0.75));
+}
+.curve-bar b {
+  position: absolute;
+  top: 2px;
+  font-family: var(--num);
+  font-size: 0.66rem;
+  font-weight: 500;
+}
+.curve-bar small {
+  position: absolute;
+  bottom: 1px;
+  font-family: var(--num);
+  font-size: 0.62rem;
+}
+.curve-bar.is-sel {
+  border-color: var(--ink);
+}
+.curve-bar.is-off {
+  opacity: 0.35;
+}
+
+.drawer.drawer--wide {
+  width: min(660px, 100%);
+}
