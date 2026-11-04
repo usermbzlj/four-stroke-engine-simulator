@@ -32,13 +32,33 @@ export interface AcceptancePlan {
   extraPoints?: number[];
   /** Sweep only these points (screening runs that only care about a few speeds). */
   onlyPoints?: number[];
+  /** Skip the blip-and-release stall check after idle. */
+  noBlip?: boolean;
 }
 
-export type AcceptancePhase = 'start' | 'idle' | 'freeRev' | 'sweep' | 'endurance' | 'overrun' | 'done';
+/** What the cell logged at one sweep point, for diagnosis. */
+export interface SweepPoint {
+  rpm: number;
+  torque: number;
+  /** Volumetric efficiency, trapped air over swept volume at ambient density. */
+  ve: number;
+  knock: number;
+  /** Knock-control retard at the end of the point, degrees. */
+  retard: number;
+  advance: number;
+  lambda: number;
+  injDuty: number;
+  boostKpa: number;
+  camPhase: number;
+  misfires: number;
+}
+
+export type AcceptancePhase = 'start' | 'idle' | 'blip' | 'freeRev' | 'sweep' | 'endurance' | 'overrun' | 'done';
 
 export const PHASE_TEXT: Record<AcceptancePhase, string> = {
   start: '起动',
   idle: '怠速',
+  blip: '轰油回怠速',
   freeRev: '空轰',
   sweep: '全油门扫转速',
   endurance: '红线耐久',
@@ -49,6 +69,10 @@ export const PHASE_TEXT: Record<AcceptancePhase, string> = {
 export interface AcceptanceResult {
   started: boolean;
   idle: { mean: number; min: number; max: number } | null;
+  /** After a blip and snap shut: lowest rpm (0 = stalled) and where it settled. */
+  blip: { min: number; end: number; stalled: boolean } | null;
+  /** Diagnostics per sweep point. */
+  points: SweepPoint[];
   /** [rpm, brake torque Nm], ascending. */
   curve: [number, number][];
   peakTorque: number;
@@ -117,6 +141,8 @@ export function runAcceptance(
   const res: AcceptanceResult = {
     started: false,
     idle: null,
+    blip: null,
+    points: [],
     curve: [],
     peakTorque: 0,
     peakTorqueRpm: 0,
@@ -151,6 +177,7 @@ export function runAcceptance(
   const cost = {
     start: 1.5,
     idle: 4,
+    blip: plan.noBlip ? 0 : 3,
     freeRev: plan.freeRev ? 3 : 0,
     sweep: sweepPoints.length * 1.1 + 0.8,
     endurance: plan.endurance?.seconds ?? 0,
@@ -272,6 +299,33 @@ export function runAcceptance(
     }
   }
 
+  // ---- blip: rev it and let go, as at a junction ----
+  if (!plan.noBlip) {
+    enter('blip');
+    core.controls.throttle = 1;
+    if (!run(0.3)) return finish();
+    core.controls.throttle = 0;
+    let min = Infinity;
+    let stalled = false;
+    const ok = run(2.7, () => {
+      if (!running()) stalled = true;
+      min = Math.min(min, running() ? core.rpm : 0);
+    });
+    res.blip = { min: stalled ? 0 : min, end: core.rpm, stalled };
+    if (!ok) return finish();
+    if (!running()) {
+      core.controls.starter = true;
+      t = 0;
+      while (t < 3 && !running()) {
+        if (!run(0.05)) return finish();
+        t += 0.05;
+      }
+      core.controls.starter = false;
+      if (!running()) return finish();
+      if (!run(1)) return finish();
+    }
+  }
+
   // ---- free rev ----
   if (plan.freeRev) {
     enter('freeRev');
@@ -298,6 +352,7 @@ export function runAcceptance(
     if (!run(i === 0 ? 1.5 : 0.7)) return finish();
     let sum = 0;
     let n = 0;
+    const acc = { ve: 0, knock: 0, advance: 0, lambda: 0, duty: 0, boost: 0, cam: 0, mis: 0 };
     let lastIndex = core.lastCycle?.index ?? -1;
     const ok = run(0.4 * q, () => {
       const c = core.lastCycle;
@@ -305,9 +360,32 @@ export function runAcceptance(
         lastIndex = c.index;
         sum += c.brakeTorque;
         n++;
+        acc.ve += c.ve;
+        acc.knock = Math.max(acc.knock, c.knock);
+        acc.advance += c.advance;
+        acc.lambda += c.lambda;
+        acc.duty = Math.max(acc.duty, c.injDuty);
+        acc.boost += c.boostKpa;
+        acc.cam += c.camPhase;
+        if (c.misfire) acc.mis++;
       }
     });
-    if (n > 0) res.curve.push([rpm, sum / n]);
+    if (n > 0) {
+      res.curve.push([rpm, sum / n]);
+      res.points.push({
+        rpm,
+        torque: sum / n,
+        ve: acc.ve / n,
+        knock: acc.knock,
+        retard: core.knockRetard,
+        advance: acc.advance / n,
+        lambda: acc.lambda / n,
+        injDuty: acc.duty,
+        boostKpa: acc.boost / n,
+        camPhase: acc.cam / n,
+        misfires: acc.mis,
+      });
+    }
     if (!ok) return finish();
   }
 

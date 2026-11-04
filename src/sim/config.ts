@@ -62,6 +62,59 @@ export interface EngineConfig {
   fuelOctane: number;
   /** Radiator size relative to the stock core. */
   radiatorCapacity: number;
+
+  /** Intake plenum / airbox volume, as a multiple of the swept volume. */
+  plenumVolume: number;
+  /** Injector flow at rated pressure, cc/min of petrol. */
+  injectorFlow: number;
+  /** Intake cam phaser authority, crank degrees (0 = no VVT). */
+  vvtRange: number;
+  /** Turbocharger frame size (0 = naturally aspirated, 0.4-2 small to big). */
+  turboSize: number;
+  /** Charge-air cooler effectiveness, 0-0.85 (0 = none). */
+  intercooler: number;
+}
+
+/** Rpm breakpoints of the ECU maps. */
+export const MAP_RPM: readonly number[] = Array.from({ length: 16 }, (_, i) => (i + 1) * 1000);
+/** Load breakpoints: manifold pressure over ambient (above 1 is boost). */
+export const MAP_LOAD: readonly number[] = [0.2, 0.4, 0.6, 0.8, 1, 1.3, 1.6, 2];
+/** An ECU map, `[load row][rpm column]`. */
+export type EcuTable = number[][];
+/** Up-shift points: index 0 is 1st → 2nd. */
+export const SHIFT_COUNT = 5;
+
+export function flatTable(v = 0): EcuTable {
+  return MAP_LOAD.map(() => MAP_RPM.map(() => v));
+}
+
+function seg(axis: readonly number[], x: number): [number, number] {
+  if (x <= axis[0]!) return [0, 0];
+  const n = axis.length - 1;
+  if (x >= axis[n]!) return [n - 1, 1];
+  let i = 0;
+  while (x > axis[i + 1]!) i++;
+  return [i, (x - axis[i]!) / (axis[i + 1]! - axis[i]!)];
+}
+
+/** Bilinear look-up, held flat outside the breakpoints. */
+export function tableAt(t: EcuTable, load: number, rpm: number): number {
+  const [r, fr] = seg(MAP_LOAD, load);
+  const [c, fc] = seg(MAP_RPM, rpm);
+  const r1 = Math.min(MAP_LOAD.length - 1, r + 1);
+  const c1 = Math.min(MAP_RPM.length - 1, c + 1);
+  const row0 = t[r]!;
+  const row1 = t[r1]!;
+  const a = row0[c]! + (row0[c1]! - row0[c]!) * fc;
+  const b = row1[c]! + (row1[c1]! - row1[c]!) * fc;
+  return a + (b - a) * fr;
+}
+
+/** Look-up in a one-row (per-rpm) table. */
+export function curveAt(t: readonly number[], rpm: number): number {
+  const [c, fc] = seg(MAP_RPM, rpm);
+  const c1 = Math.min(MAP_RPM.length - 1, c + 1);
+  return t[c]! + (t[c1]! - t[c]!) * fc;
 }
 
 export interface EcuConfig {
@@ -78,6 +131,41 @@ export interface EcuConfig {
   overrunFuelCut: boolean;
   /** Retard on detected knock, then creep back. */
   knockControl: boolean;
+
+  /** Spark trim on top of the base map, degrees, by load and rpm. */
+  sparkTable: EcuTable;
+  /** Lambda trim on top of the cruise/WOT targets, by load and rpm. */
+  lambdaTable: EcuTable;
+  /** Intake cam advance, crank degrees (needs a phaser), by load and rpm. */
+  camTable: EcuTable;
+  /** Boost target by rpm, kPa above ambient (needs a turbo). */
+  boostTable: number[];
+
+  /** Overrun fuel cut comes in this far above idle, rpm. */
+  overrunCutAbove: number;
+  /** ... and fuel comes back this far above idle, rpm. */
+  overrunResumeAbove: number;
+  /** Spark held back at idle so the ECU can give it back when rpm dips, degrees. */
+  idleSparkReserve: number;
+  /** Idle air feedback strength, 1 = factory. */
+  idleGain: number;
+  /** Mixture while cranking. */
+  crankLambda: number;
+  /** Wall-film compensation, 1 = exact, 0 = none (tip-in stumbles lean). */
+  accelEnrich: number;
+  /** Turbo anti-lag: retarded, rich firing off throttle to keep the turbine lit. */
+  antiLag: boolean;
+
+  /** Launch control limiter while staged, rpm (0 = off). */
+  launchRpm: number;
+  /** Up-shift rpm per gear for the rider and the shift light (0 = near the limiter). */
+  shiftRpm: number[];
+  /** Ignition cut per quick-shift, ms. */
+  quickShiftMs: number;
+  /** Traction control: allowed rear-wheel slip (0 = off). */
+  tractionControl: number;
+  /** Wheelie control: cut torque when the front goes light. */
+  wheelieControl: boolean;
 }
 
 export interface BenchConfig {
@@ -121,6 +209,11 @@ const STREET_250: EngineConfig = {
   rodStrength: 10300,
   fuelOctane: 92,
   radiatorCapacity: 1,
+  plenumVolume: 0.8,
+  injectorFlow: 160,
+  vvtRange: 0,
+  turboSize: 0,
+  intercooler: 0,
 };
 
 const RACE_450: EngineConfig = {
@@ -150,6 +243,11 @@ const RACE_450: EngineConfig = {
   rodStrength: 21500,
   fuelOctane: 98,
   radiatorCapacity: 1.3,
+  plenumVolume: 0.8,
+  injectorFlow: 320,
+  vvtRange: 0,
+  turboSize: 0,
+  intercooler: 0,
 };
 
 const THUMPER_650: EngineConfig = {
@@ -179,6 +277,11 @@ const THUMPER_650: EngineConfig = {
   rodStrength: 16900,
   fuelOctane: 92,
   radiatorCapacity: 1.4,
+  plenumVolume: 0.8,
+  injectorFlow: 300,
+  vvtRange: 0,
+  turboSize: 0,
+  intercooler: 0,
 };
 
 export const DEFAULT_ECU: EcuConfig = {
@@ -190,6 +293,22 @@ export const DEFAULT_ECU: EcuConfig = {
   idleRpm: 1400,
   overrunFuelCut: true,
   knockControl: true,
+  sparkTable: flatTable(),
+  lambdaTable: flatTable(),
+  camTable: flatTable(),
+  boostTable: MAP_RPM.map(() => 0),
+  overrunCutAbove: 700,
+  overrunResumeAbove: 350,
+  idleSparkReserve: 0,
+  idleGain: 1,
+  crankLambda: 0.85,
+  accelEnrich: 1,
+  antiLag: false,
+  launchRpm: 0,
+  shiftRpm: Array.from({ length: SHIFT_COUNT }, () => 0),
+  quickShiftMs: 70,
+  tractionControl: 0,
+  wheelieControl: false,
 };
 
 export const DEFAULT_BENCH: BenchConfig = {
@@ -359,6 +478,11 @@ export const CONFIG_LIMITS: Record<Exclude<keyof EngineConfig, 'muffler'>, [numb
   rodStrength: [7000, 26000, 100],
   fuelOctane: [87, 102, 1],
   radiatorCapacity: [0.6, 2, 0.05],
+  plenumVolume: [0.5, 8, 0.1],
+  injectorFlow: [80, 900, 10],
+  vvtRange: [0, 50, 1],
+  turboSize: [0, 2, 0.05],
+  intercooler: [0, 0.85, 0.05],
 };
 
 /**
@@ -379,6 +503,8 @@ export function clampConfig(c: EngineConfig): EngineConfig {
     out[key] = typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : DEFAULT_PRESET.engine[key];
   }
   if (out.muffler !== 'stock' && out.muffler !== 'sport' && out.muffler !== 'open') out.muffler = 'stock';
+  // Below the smallest frame there is no turbo at all.
+  if (out.turboSize < 0.4) out.turboSize = 0;
   out.intakeValves = Math.round(out.intakeValves);
   out.exhaustValves = Math.round(out.exhaustValves);
   const fit = maxValveDiameters(out);
@@ -406,9 +532,34 @@ export function clampBench(b: BenchConfig): BenchConfig {
   };
 }
 
+const num = (v: unknown, lo: number, hi: number, fallback: number): number =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback;
+
+/** A map of the right shape with every cell in range; anything else becomes `fill`. */
+export function cleanTable(t: unknown, lo: number, hi: number, fill = 0): EcuTable {
+  const rows = Array.isArray(t) ? t : [];
+  return MAP_LOAD.map((_, r) => {
+    const row: unknown[] = Array.isArray(rows[r]) ? (rows[r] as unknown[]) : [];
+    return MAP_RPM.map((_, c) => num(row[c], lo, hi, fill));
+  });
+}
+
+function cleanRow(t: unknown, n: number, lo: number, hi: number, fill = 0): number[] {
+  const row: unknown[] = Array.isArray(t) ? t : [];
+  return Array.from({ length: n }, (_, i) => num(row[i], lo, hi, fill));
+}
+
+/** Limits of the ECU's table cells. */
+export const TABLE_LIMITS = {
+  spark: [-20, 20],
+  lambda: [-0.3, 0.3],
+  cam: [0, 50],
+  boost: [0, 200],
+} as const;
+
 export function clampEcu(e: EcuConfig): EcuConfig {
-  const num = (v: unknown, lo: number, hi: number, fallback: number): number =>
-    typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback;
+  const resume = num(e.overrunResumeAbove, 100, 2500, 350);
+  const launch = num(e.launchRpm, 0, 14000, 0);
   return {
     advanceOffset: num(e.advanceOffset, -20, 20, 0),
     cruiseLambda: num(e.cruiseLambda, 0.7, 1.4, 1),
@@ -418,5 +569,21 @@ export function clampEcu(e: EcuConfig): EcuConfig {
     idleRpm: num(e.idleRpm, 800, 3000, 1400),
     overrunFuelCut: e.overrunFuelCut !== false,
     knockControl: e.knockControl !== false,
+    sparkTable: cleanTable(e.sparkTable, ...TABLE_LIMITS.spark),
+    lambdaTable: cleanTable(e.lambdaTable, ...TABLE_LIMITS.lambda),
+    camTable: cleanTable(e.camTable, ...TABLE_LIMITS.cam),
+    boostTable: cleanRow(e.boostTable, MAP_RPM.length, ...TABLE_LIMITS.boost),
+    overrunCutAbove: Math.max(resume + 100, num(e.overrunCutAbove, 200, 3000, 700)),
+    overrunResumeAbove: resume,
+    idleSparkReserve: num(e.idleSparkReserve, 0, 15, 0),
+    idleGain: num(e.idleGain, 0.3, 3, 1),
+    crankLambda: num(e.crankLambda, 0.6, 1.1, 0.85),
+    accelEnrich: num(e.accelEnrich, 0, 2, 1),
+    antiLag: e.antiLag === true,
+    launchRpm: launch > 0 && launch < 2000 ? 2000 : launch,
+    shiftRpm: cleanRow(e.shiftRpm, SHIFT_COUNT, 0, 16000).map((v) => (v > 0 && v < 2000 ? 2000 : v)),
+    quickShiftMs: num(e.quickShiftMs, 30, 150, 70),
+    tractionControl: num(e.tractionControl, 0, 0.4, 0),
+    wheelieControl: e.wheelieControl === true,
   };
 }

@@ -25,9 +25,11 @@ import {
   DEFAULT_BENCH,
   LIFT_PROFILE_STRETCH,
   blockChanged,
+  curveAt,
   displacementCc,
   rodInertiaForce,
   safeLimiterRpm,
+  tableAt,
   valveFloatRpm,
 } from './config';
 import { createRng, type Rng } from './rng';
@@ -76,6 +78,20 @@ const THROTTLE_PROGRESSION = 1.8;
 const KNOCK_HARMLESS = 0.08;
 /** Laminar flame progress expressed as an equivalent crank speed (~300 rpm). */
 const LAMINAR_FLOOR_RAD_S = 31;
+/** Petrol density, kg per cc. */
+const FUEL_KG_PER_CC = 0.74e-3;
+/** Highest injector duty the ECU will command. */
+const MAX_DUTY = 0.9;
+/** Time a wall film takes to evaporate while air is flowing past it, s. */
+const FILM_TAU = 0.1;
+/** Exhaust power that spins a size-1 turbo to its rated speed, W. */
+const TURBO_PREF = 20000;
+/** Boost the wastegate spring alone holds, Pa. */
+const WASTEGATE_SPRING = 35000;
+/** Compressor isentropic efficiency. */
+const COMPRESSOR_EFF = 0.68;
+/** Cam phaser slew rate, crank degrees per second. */
+const PHASER_RATE = 180;
 
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
 const smoothstep = (a: number, b: number, x: number): number => {
@@ -142,7 +158,9 @@ export type CoreEvent =
   | { kind: 'failure'; failure: Failure }
   | { kind: 'limiter' }
   | { kind: 'valveFloat'; rpm: number }
-  | { kind: 'guard'; reason: 'rod' | 'valve' | 'piston'; rpm: number };
+  | { kind: 'guard'; reason: 'rod' | 'valve' | 'piston'; rpm: number }
+  /** Blow-off valve venting boost on a snap shut. */
+  | { kind: 'blowoff'; kpa: number };
 
 export interface CycleStats {
   index: number;
@@ -168,6 +186,12 @@ export interface CycleStats {
   /** Mean plenum pressure, kPa. */
   mapKpa: number;
   fuelMg: number;
+  /** Injector duty this cycle, 0-1 (1 = flat out: the engine is running lean on it). */
+  injDuty: number;
+  /** Boost at the throttle, kPa above ambient. */
+  boostKpa: number;
+  /** Intake cam advance from the phaser, degrees. */
+  camPhase: number;
 }
 
 /** One crank cycle, sampled per degree from firing TDC. */
@@ -246,6 +270,8 @@ export class EngineCore {
   private coolantCapacity = 0;
   private accessoryScale = 1;
   private springFmep = 0;
+  private ivCenterBase = 0;
+  private injectorKgS = 0;
 
   // --- crank ---
   theta = 0;
@@ -307,6 +333,29 @@ export class EngineCore {
   private burn10 = -1;
   private burn90 = -1;
 
+  // --- induction extras ---
+  /** Pressure and temperature ahead of the throttle (boost, intercooler). */
+  pUp = P_AMB;
+  tUp = T_AMB;
+  /** Pressure the tailpipe exhausts into (turbine back-pressure). */
+  pBack = P_AMB;
+  /** Turbo shaft speed relative to rated, 0-1.25. */
+  turboN = 0;
+  boostPa = 0;
+  private boostTarget = 0;
+  private exhPower = 0;
+  private airFlowAvg = 0;
+  private prevThrottleCmd = 0;
+  /** Intake cam advance actually reached by the phaser, degrees. */
+  camPhase = 0;
+  private camTarget = 0;
+  /** Liquid fuel on the port wall, kg. */
+  film = 0;
+  private filmX = 0.32;
+  private injUsed = 0;
+  private injBudget = 1;
+  private cycDuty = 0;
+
   // --- ECU ---
   advance = 10;
   lambdaTarget = 1;
@@ -314,6 +363,13 @@ export class EngineCore {
   private fuelOn = true;
   overrunCut = false;
   limiterCut = false;
+  /** Spark cut asked for from outside the engine (traction, quick-shift, launch). */
+  extCut = false;
+  /** Rpm limit asked for from outside (launch control), 0 = none. */
+  extLimit = 0;
+  /** Anti-lag requested from outside (staging, shifts). */
+  alsRequest = false;
+  antiLagOn = false;
   private brakeIntegral = 0;
   brakeTorque = 0;
 
@@ -377,6 +433,8 @@ export class EngineCore {
   /** Smoothed net crank torque for display, Nm. */
   torqueLive = 0;
 
+  /** Something driven by the crank (a vehicle): torque it takes, Nm. */
+  extLoad: ((omega: number, h: number, inertia: number) => number) | null = null;
   readonly events: CoreEvent[] = [];
   private readonly rng: Rng;
   private gasTorque = 0;
@@ -407,7 +465,9 @@ export class EngineCore {
     this.vc = this.vd / (c.compressionRatio - 1);
 
     const ecl = 2 * c.lobeSeparation - c.intakeCenterline;
-    this.ivCenter = 360 + c.intakeCenterline;
+    this.ivCenterBase = 360 + c.intakeCenterline;
+    this.camPhase = Math.min(this.camPhase, c.vvtRange);
+    this.ivCenter = this.ivCenterBase - this.camPhase;
     this.evCenter = 360 - ecl;
     this.ivHalf = (c.intakeDuration / 2) * LIFT_PROFILE_STRETCH;
     this.evHalf = (c.exhaustDuration / 2) * LIFT_PROFILE_STRETCH;
@@ -422,7 +482,15 @@ export class EngineCore {
     this.runnerArea = (Math.PI / 4) * Math.pow(c.intakeRunnerDiameter / 1000, 2);
     this.runnerLen = c.intakeRunnerLength / 1000;
     this.runnerVol = this.runnerArea * this.runnerLen * 0.5;
-    this.plenumVol = Math.max(0.00015, this.vd * 0.8);
+    this.plenumVol = Math.max(0.00006, this.vd * c.plenumVolume);
+    this.injectorKgS = (c.injectorFlow / 60) * FUEL_KG_PER_CC;
+    if (c.turboSize <= 0) {
+      this.turboN = 0;
+      this.boostPa = 0;
+      this.pUp = P_AMB;
+      this.tUp = T_AMB;
+      this.pBack = P_AMB;
+    }
     this.headerArea = (Math.PI / 4) * Math.pow(c.exhaustHeaderDiameter / 1000, 2);
     this.headerLen = c.exhaustHeaderLength / 1000;
     this.headerVol = this.headerArea * this.headerLen * 0.5;
@@ -482,6 +550,12 @@ export class EngineCore {
     this.fuelEp = 0;
     this.airEp = this.mEp;
     this.qHeader = 0;
+    this.film = 0;
+    this.turboN = 0;
+    this.boostPa = 0;
+    this.pUp = P_AMB;
+    this.tUp = T_AMB;
+    this.pBack = P_AMB;
     this.mMf = rho * this.mufflerVol;
     this.airMf = this.mMf;
     this.fuelMf = 0;
@@ -507,6 +581,7 @@ export class EngineCore {
     this.oilC = this.coolantC;
     this.lastCycle = null;
     this.firedRecently = 0;
+    this.camPhase = 0;
     this.resetGas();
   }
 
@@ -536,7 +611,11 @@ export class EngineCore {
     const runnerVol = this.runnerVol;
     const headerVol = this.headerVol;
     const mufflerVol = this.mufflerVol;
+    const plenumVol = this.plenumVol;
     this.setConfig(config);
+    const pl = this.plenumVol / plenumVol;
+    this.mPl *= pl;
+    this.burnedPl *= pl;
     const ri = this.runnerVol / runnerVol;
     this.mIp *= ri;
     this.burnedIp *= ri;
@@ -609,20 +688,29 @@ export class EngineCore {
 
   private runEcuForCycle(rpm: number, load: number): void {
     const e = this.ecu;
+    const closed = this.controls.throttle < 0.02;
+    const atIdle = this.controls.throttle < 0.03 && rpm < e.idleRpm + 400;
+    this.antiLagOn = e.antiLag && this.config.turboSize > 0 && rpm > 2500 && (this.alsRequest || this.controls.throttle < 0.1);
     if (rpm < 500) {
       this.advance = 2;
-      this.lambdaTarget = 0.85;
+      this.lambdaTarget = e.crankLambda;
     } else {
-      this.advance = clamp(this.factoryAdvance(rpm, load) + e.advanceOffset - this.knockRetard, -10, 60);
-      const blend = smoothstep(0.6, 0.92, load);
-      let lambda = e.cruiseLambda + (e.wotLambda - e.cruiseLambda) * blend;
+      let advance = this.factoryAdvance(rpm, load) + e.advanceOffset + tableAt(e.sparkTable, load, rpm) - this.knockRetard;
+      // Idle spark reserve: held back at target, handed back (and more) as the speed sags.
+      if (atIdle && e.idleSparkReserve > 0) advance += -e.idleSparkReserve + clamp(((e.idleRpm - rpm) / 250) * e.idleSparkReserve, 0, e.idleSparkReserve * 1.6);
+      if (this.antiLagOn) advance -= 25;
+      this.advance = clamp(advance, -15, 60);
+      const blend = smoothstep(0.6, 0.92, Math.min(load, 1));
+      let lambda = e.cruiseLambda + (e.wotLambda - e.cruiseLambda) * blend + tableAt(e.lambdaTable, load, rpm);
       if (this.coolantC < 50) lambda *= 0.93;
-      this.lambdaTarget = lambda;
+      if (this.antiLagOn) lambda = Math.min(lambda, 0.82);
+      this.lambdaTarget = clamp(lambda, 0.6, 1.5);
     }
+    this.camTarget = this.config.vvtRange > 0 ? clamp(tableAt(e.camTable, load, rpm), 0, this.config.vvtRange) : 0;
+    this.boostTarget = this.config.turboSize > 0 ? curveAt(e.boostTable, rpm) * 1000 : 0;
 
-    const closed = this.controls.throttle < 0.02;
-    if (e.overrunFuelCut && closed && rpm > e.idleRpm + 700) this.overrunCut = true;
-    if (!closed || rpm < e.idleRpm + 350 || !e.overrunFuelCut) this.overrunCut = false;
+    if (e.overrunFuelCut && closed && rpm > e.idleRpm + e.overrunCutAbove && !this.antiLagOn) this.overrunCut = true;
+    if (!closed || rpm < e.idleRpm + e.overrunResumeAbove || !e.overrunFuelCut || this.antiLagOn) this.overrunCut = false;
 
     if (e.knockControl) this.knockRetard = Math.max(0, this.knockRetard - 0.12);
     else this.knockRetard = 0;
@@ -657,7 +745,8 @@ export class EngineCore {
     const throttleCdA = 0.8 * (butterfly + bypass) + 0.6e-6;
 
     // ---- limiter -----------------------------------------------------------
-    const limiterRpm = ctl.protect ? Math.min(this.ecu.limiterRpm, Math.floor(safeLimiterRpm(c) / 100) * 100) : this.ecu.limiterRpm;
+    let limiterRpm = ctl.protect ? Math.min(this.ecu.limiterRpm, Math.floor(safeLimiterRpm(c) / 100) * 100) : this.ecu.limiterRpm;
+    if (this.extLimit > 0) limiterRpm = Math.min(limiterRpm, this.extLimit);
     if (rpm > limiterRpm) {
       if (!this.limiterCut) this.events.push({ kind: 'limiter' });
       this.limiterCut = true;
@@ -684,11 +773,11 @@ export class EngineCore {
     // ---- flows (all evaluated from the state at the start of the substep) --
     const p = this.p;
     const T = this.T;
-    const mdotThr = flowBetween(throttleCdA, P_AMB, T_AMB, this.pPl, this.tPl);
+    const mdotThr = flowBetween(throttleCdA, this.pUp, this.tUp, this.pPl, this.tPl);
     const mdotIv = flowBetween(ivCdA, this.pIp, this.tIp, p, T);
     const mdotEv = flowBetween(evCdA, p, T, this.pEp, this.tEp);
     const tailCdA = 0.7 * this.tailArea;
-    const mdotTail = flowBetween(tailCdA, this.pMf, this.tMf, P_AMB, T_AMB);
+    const mdotTail = flowBetween(tailCdA, this.pMf, this.tMf, this.pBack, T_AMB);
     const leakCdA = (1.5e-7 + this.pistonDamage * 6e-6) * (this.boreM / 0.072) + (broken ? 2e-4 : 0);
     const mdotLeak = orifice(leakCdA, p, T, P_AMB);
     this.exhaustValveFlow = mdotEv;
@@ -762,7 +851,18 @@ export class EngineCore {
       const dmIn = mdotIv * h;
       const burnedFrac = this.mIp > 0 ? clamp(this.burnedIp / this.mIp, 0, 1) : 0;
       const airIn = dmIn * (1 - burnedFrac);
-      const fuelIn = this.fuelOn ? airIn / (AFR * this.lambdaTarget) : 0;
+      // Port injection onto a wall film (x-tau): part of each squirt sticks,
+      // the film evaporates into the passing air. The ECU compensates by
+      // `accelEnrich` of what its film model says.
+      const desired = this.fuelOn ? airIn / (AFR * this.lambdaTarget) : 0;
+      const evap = dmIn > 0 ? this.film * Math.min(1, h / FILM_TAU) : 0;
+      const X = this.filmX;
+      const k = this.ecu.accelEnrich;
+      let inj = desired > 0 ? Math.max(0, (desired - k * evap) / (1 - k * X)) : 0;
+      inj = Math.min(inj, Math.max(0, this.injBudget - this.injUsed));
+      this.injUsed += inj;
+      this.film = Math.max(0, this.film + X * inj - evap);
+      const fuelIn = (1 - X) * inj + evap;
       // This cycle and the next (exhaust backflow) carry dry air: a lean miss there is expected.
       if (!this.fuelOn && airIn > 0) this.starvedSparks = 2;
       this.mAir += airIn;
@@ -833,7 +933,7 @@ export class EngineCore {
       if (mdotThr < 0) this.burnedPl += mdotThr * h * plBurnedFrac;
 
       const dmP = mdotThr * h - qR * h;
-      let dUP = (mdotThr >= 0 ? CP * T_AMB : CP * this.tPl) * mdotThr * h;
+      let dUP = (mdotThr >= 0 ? CP * this.tUp : CP * this.tPl) * mdotThr * h;
       dUP -= (qR >= 0 ? CP * this.tPl : CP * this.tIp) * qR * h;
       const wallT = 273 + 25 + (this.coolantC - 25) * 0.35;
       dUP += 0.6 * (wallT - this.tPl) * h;
@@ -969,7 +1069,8 @@ export class EngineCore {
     }
     this.brakeTorque = brake;
 
-    const net = this.gasTorque - this.frictionTorque - brake * Math.tanh(this.omega / 5) + starter;
+    const ext = this.extLoad ? this.extLoad(this.omega, h, this.inertia) : 0;
+    const net = this.gasTorque - this.frictionTorque - brake * Math.tanh(this.omega / 5) + starter - ext;
     this.omega += (net / this.inertia) * h;
     if (this.omega < -40) this.omega = -40;
     this.torqueLive += (this.gasTorque - this.frictionTorque - this.torqueLive) * Math.min(1, h / 0.15);
@@ -1007,6 +1108,48 @@ export class EngineCore {
     if (this.omega > 0) this.angleEvents(cycleDeg, next / DEG, rpm, floatRatio);
 
     this.updateThermal(h, rpm, qWall / h);
+    this.updateInduction(h, mdotThr, mdotTail);
+  }
+
+  /** Turbo, cam phaser. Runs every substep; all first-order lags. */
+  private updateInduction(h: number, mdotThr: number, mdotTail: number): void {
+    const c = this.config;
+    if (c.vvtRange > 0 || this.camPhase !== 0) {
+      const oil = clamp(this.oilPressure / 1.5, 0.15, 1);
+      const d = clamp(this.camTarget - this.camPhase, -PHASER_RATE * oil * h, PHASER_RATE * oil * h);
+      this.camPhase = clamp(this.camPhase + d, 0, c.vvtRange);
+      this.ivCenter = this.ivCenterBase - this.camPhase;
+    }
+    if (c.turboSize <= 0) return;
+    const s = c.turboSize;
+    // Turbine: enthalpy of the exhaust stream past ambient.
+    const pex = Math.max(0, mdotTail) * CP * Math.max(0, this.tMf - T_AMB);
+    this.exhPower += (pex - this.exhPower) * Math.min(1, h / 0.04);
+    this.airFlowAvg += (Math.max(0, mdotThr) - this.airFlowAvg) * Math.min(1, h / 0.05);
+    const nTarget = Math.min(1.25, Math.sqrt(this.exhPower / (TURBO_PREF * s * s)));
+    // Bigger wheels are heavier: more lag.
+    const tau = 0.12 + 0.5 * s * s;
+    this.turboN += (nTarget - this.turboN) * Math.min(1, h / tau);
+    const available = this.turboN * this.turboN * (110000 + 90000 * s);
+    // A small compressor runs out of flow at the top end.
+    const choke = clamp(1 - (this.airFlowAvg / (0.04 * s) - 0.9) / 0.6, 0.3, 1);
+    const target = Math.max(this.boostTarget, WASTEGATE_SPRING);
+    const cmd = this.controls.throttle;
+    if (this.prevThrottleCmd - cmd > 0.4 && this.boostPa > 20000) {
+      this.events.push({ kind: 'blowoff', kpa: this.boostPa / 1000 });
+      this.boostPa *= 0.3;
+    }
+    this.prevThrottleCmd = cmd;
+    // Throttle shut: the blow-off valve recirculates; only anti-lag keeps pressure up.
+    const vented = cmd < 0.1 && !this.antiLagOn ? 10000 : Infinity;
+    const boost = Math.min(available * choke, target, vented);
+    this.boostPa += (boost - this.boostPa) * Math.min(1, h / 0.03);
+    const pr = 1 + this.boostPa / P_AMB;
+    const t2 = T_AMB * (1 + (Math.pow(pr, 0.2857) - 1) / COMPRESSOR_EFF);
+    this.tUp = t2 - c.intercooler * (t2 - T_AMB);
+    this.pUp = P_AMB + this.boostPa * (1 - 0.06 * c.intercooler);
+    // The turbine is a restriction the exhaust has to push through.
+    this.pBack = P_AMB + this.boostPa * (0.45 + 0.35 / s);
   }
 
   private updateIdleAir(rpm: number, h: number): void {
@@ -1022,15 +1165,16 @@ export class EngineCore {
     const closed = this.controls.throttle < 0.03;
     const engaged = this.controls.throttle < 0.3 && rpm < target + 2500;
     if (!engaged) {
-      this.iac = 0;
+      this.iac = this.antiLagOn ? 0.15 : 0;
       return;
     }
     const err = (target - rpm) / 1000;
     // Learn only at a closed throttle near idle, so a flare after start or a blip does not unwind it.
     if (closed && Math.abs(err) < 0.4) this.iacIntegral = clamp(this.iacIntegral + err * 0.5 * h, -0.6, 1.5);
-    const gain = err > 0 ? 0.08 : 0.03;
+    const gain = (err > 0 ? 0.08 : 0.03) * this.ecu.idleGain;
     const opening = this.iacBase * (1 + this.iacIntegral) + err * gain;
     this.iac = closed ? Math.max(clamp(opening, 0, 0.2), this.dashpot) : clamp(opening, 0, 0.2);
+    if (this.antiLagOn) this.iac = Math.max(this.iac, 0.15);
   }
 
   /** Fire the events whose crank angle lies in (from, to]. */
@@ -1058,8 +1202,15 @@ export class EngineCore {
     this.cycAdvance = this.advance;
     // Nothing has burned in this cycle yet, whether or not it lights.
     this.xbPrev = 0;
+    // The next charge gets the injector for one cycle's worth of time.
+    const cycleTime = FOUR_PI / Math.max(Math.abs(this.omega), 5);
+    const capacity = this.injectorKgS * cycleTime;
+    this.cycDuty = capacity > 0 ? this.injUsed / capacity : 0;
+    this.injBudget = capacity * MAX_DUTY;
+    this.injUsed = 0;
     if (!ctl.ignition || this.failure) return;
     if (this.limiterCut && this.ecu.limiterMode === 'spark') return;
+    if (this.extCut) return;
 
     const fresh = this.mAir + this.mFuel;
     const residual = 1 - fresh / this.m;
@@ -1224,6 +1375,9 @@ export class EngineCore {
         misfire: this.cycMisfire,
         mapKpa,
         fuelMg: this.cycFuelIn * 1e6,
+        injDuty: this.cycDuty,
+        boostKpa: this.boostPa / 1000,
+        camPhase: this.camPhase,
       };
 
       const swap = this.lastTrace;
@@ -1264,6 +1418,8 @@ export class EngineCore {
     }
     this.coolantC += (qIn / this.coolantCapacity) * h;
 
+    // Cold ports hold more of each squirt.
+    this.filmX = 0.32 + 0.3 * clamp((80 - this.coolantC) / 60, 0, 1);
     const oilTarget = this.coolantC + 6 + frictionW / 300;
     this.oilC += (oilTarget - this.oilC) * Math.min(1, h / 25);
     const visc = clamp(1 + (90 - this.oilC) / 60, 0.6, 2.2);

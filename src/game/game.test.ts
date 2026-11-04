@@ -12,6 +12,8 @@ function fakeResult(patch: Partial<AcceptanceResult> = {}): AcceptanceResult {
   return {
     started: true,
     idle: { mean: 1400, min: 1300, max: 1500 },
+    blip: null,
+    points: [],
     curve: [
       [2000, 20],
       [4000, 24],

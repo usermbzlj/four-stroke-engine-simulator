@@ -20,7 +20,12 @@ export type PartId =
   | 'bore'
   | 'crank'
   | 'radiator'
-  | 'fuel';
+  | 'fuel'
+  | 'airbox'
+  | 'injector'
+  | 'vvt'
+  | 'turbo'
+  | 'intercooler';
 
 export interface Part {
   id: PartId;
@@ -128,6 +133,41 @@ export const PARTS: Part[] = [
     price: 500,
     keys: ['radiatorCapacity'],
     pitch: '没有台架水温机的时候，全靠它。',
+  },
+  {
+    id: 'airbox',
+    name: '稳压腔',
+    price: 300,
+    keys: ['plenumVolume'],
+    pitch: '单缸一个循环只吸一口，稳压腔就是那口气的蓄水池。大了扭矩稳，油门变钝。',
+  },
+  {
+    id: 'injector',
+    name: '喷油嘴',
+    price: 380,
+    keys: ['injectorFlow'],
+    pitch: '喷不够油，空燃比到高转、高增压就自己变稀。上涡轮几乎一定要换。',
+  },
+  {
+    id: 'vvt',
+    name: '可变气门正时',
+    price: 1600,
+    keys: ['vvtRange'],
+    pitch: '进气凸轮装上相位器，ECU 按转速和负荷提前或推后。低转要扭矩、高转要功率，两头都要。',
+  },
+  {
+    id: 'turbo',
+    name: '涡轮增压',
+    price: 3800,
+    keys: ['turboSize'],
+    pitch: '用排气的余热把空气压进去。动力能翻倍，也带来迟滞、爆震、高排温和更多的油。',
+  },
+  {
+    id: 'intercooler',
+    name: '中冷器',
+    price: 1100,
+    keys: ['intercooler'],
+    pitch: '压过的空气很热。冷下来更密、更不爆。没有涡轮装它没用。',
   },
   {
     id: 'fuel',

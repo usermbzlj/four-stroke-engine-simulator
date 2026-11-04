@@ -8,6 +8,8 @@ import { repair, search } from './search';
 const fake = (peakHp: number): AcceptanceResult => ({
   started: true,
   idle: { mean: 1400, min: 1350, max: 1450 },
+  blip: null,
+  points: [],
   curve: [],
   peakTorque: 0,
   peakTorqueRpm: 0,

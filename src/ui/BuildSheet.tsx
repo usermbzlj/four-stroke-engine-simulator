@@ -44,6 +44,11 @@ const META: Record<NumericKey, FieldMeta> = {
   rodStrength: { label: '连杆强度', unit: 'N', digits: 0 },
   fuelOctane: { label: '燃油辛烷值', unit: 'RON', digits: 0 },
   radiatorCapacity: { label: '散热器', unit: '×', digits: 2, hint: '只在没有台架水温机时起作用。' },
+  plenumVolume: { label: '稳压腔容积', unit: '× 排量', digits: 1, hint: '大了进气脉动被抚平、扭矩稳，油门响应变钝；单缸上涡轮最好有 4–5 倍排量。' },
+  injectorFlow: { label: '喷油嘴流量', unit: 'cc/min', digits: 0, hint: '喷油嘴占空比到 90% 就喷不出更多了，再往上发动机只会越跑越稀。' },
+  vvtRange: { label: '进气相位器行程', unit: '°', digits: 0, hint: '0 = 没有可变正时。装了以后 ECU 的凸轮表才起作用。' },
+  turboSize: { label: '涡轮尺寸', unit: '', digits: 2, hint: '0 = 自然吸气。小涡轮起压早、高转憋气；大涡轮迟滞长、顶端猛。' },
+  intercooler: { label: '中冷效率', unit: '', digits: 2, hint: '增压后的空气很热，中冷把它降回来，爆震边界和充气量都跟着好。' },
 };
 
 const MUFFLERS: { value: MufflerType; label: string }[] = (['stock', 'sport', 'open'] as const).map((m) => ({ value: m, label: MUFFLER_TEXT[m] }));

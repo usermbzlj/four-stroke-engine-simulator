@@ -74,6 +74,8 @@ function describe(e: CoreEvent): Described | null {
       return { tone: 'warn', key: 'guard', text: '老周接手了', level: 1 };
     case 'failure':
       return { tone: 'fail', key: 'fail', text: e.failure.title, level: 0 };
+    case 'blowoff':
+      return { tone: 'pop', key: 'blowoff', text: `泄压阀放气（${Math.round(e.kpa)} kPa）`, level: 0 };
   }
 }
 
