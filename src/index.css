@@ -3047,3 +3047,28 @@ button.mode:hover {
   background: var(--bg);
   color: var(--ink);
 }
+
+.start-reset {
+  align-self: flex-start;
+  margin-top: 18px;
+  color: var(--faint);
+}
+.start-reset-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--knock);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.start-reset-ask span {
+  flex: 1 1 260px;
+}
+.start-reset-yes {
+  border-color: var(--knock);
+  color: var(--knock);
+}

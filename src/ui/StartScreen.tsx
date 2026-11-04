@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ENGINE_UNLOCK, isEngineOpen } from '../game/career';
 import { JOBS } from '../game/jobs';
 import { enterJob, enterSandbox } from '../game/session';
@@ -6,6 +7,37 @@ import { PRESETS, displacementCc } from '../sim/config';
 import { useBench } from '../state/benchStore';
 import { useUi } from '../state/uiStore';
 import { openBench } from './job/openBench';
+
+/** Wipe every saved thing (progress, garage, records, settings) and start fresh. */
+function wipeAll(): void {
+  try {
+    for (const k of Object.keys(localStorage)) if (k.startsWith('engine-bench:')) localStorage.removeItem(k);
+  } catch {
+    // Storage unavailable: nothing was saved anyway.
+  }
+  location.reload();
+}
+
+function ResetProgress(): React.ReactElement {
+  const [ask, setAsk] = useState(false);
+  if (!ask)
+    return (
+      <button type="button" className="btn btn--ghost btn--small start-reset" onClick={() => setAsk(true)}>
+        清空进度，重新开始
+      </button>
+    );
+  return (
+    <div className="start-reset-ask" role="alertdialog" aria-label="确认清空进度">
+      <span>工单星级、钱和声望、买过的零件、奖牌和纪录、自己的车，全部清掉，回到第一天。不能撤销。</span>
+      <button type="button" className="btn btn--small start-reset-yes" onClick={wipeAll}>
+        确定清空
+      </button>
+      <button type="button" className="btn btn--ghost btn--small" onClick={() => setAsk(false)}>
+        算了
+      </button>
+    </div>
+  );
+}
 
 export function StartScreen(): React.ReactElement {
   const progress = useGame((s) => s.progress);
@@ -75,6 +107,7 @@ export function StartScreen(): React.ReactElement {
           <kbd>S</kbd> 按住起动{'\u3000'}<kbd>空格</kbd> 全油门{'\u3000'}<kbd>↑</kbd>
           <kbd>↓</kbd> 手油门{'\u3000'}<kbd>B</kbd> 测功机定速{'\u3000'}<kbd>?</kbd> 全部按键。戴耳机效果最好。
         </p>
+        <ResetProgress />
       </div>
     </div>
   );
