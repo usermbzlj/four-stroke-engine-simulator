@@ -217,7 +217,7 @@ export function startAcceptance(): void {
       useAcceptance.setState({ phase: msg.progress.phase, fraction: msg.progress.fraction, curve: msg.progress.curve });
     } else if (msg.type === 'done') {
       finish(job, sig, cost, msg.result);
-    } else {
+    } else if (msg.type === 'error') {
       useAcceptance.setState({ status: 'error', error: msg.message });
     }
   };

@@ -145,6 +145,12 @@ export interface EcuConfig {
   overrunCutAbove: number;
   /** ... and fuel comes back this far above idle, rpm. */
   overrunResumeAbove: number;
+  /** Throttle has to be shut this long before the fuel is cut, s. */
+  overrunDelay: number;
+  /** Air left in on a snap shut, as a share of the grip opening. */
+  dashpot: number;
+  /** How long that air takes to bleed away, s. */
+  dashpotTime: number;
   /** Spark held back at idle so the ECU can give it back when rpm dips, degrees. */
   idleSparkReserve: number;
   /** Idle air feedback strength, 1 = factory. */
@@ -299,6 +305,9 @@ export const DEFAULT_ECU: EcuConfig = {
   boostTable: MAP_RPM.map(() => 0),
   overrunCutAbove: 700,
   overrunResumeAbove: 350,
+  overrunDelay: 0.3,
+  dashpot: 0.3,
+  dashpotTime: 0.7,
   idleSparkReserve: 0,
   idleGain: 1,
   crankLambda: 0.85,
@@ -575,6 +584,9 @@ export function clampEcu(e: EcuConfig): EcuConfig {
     boostTable: cleanRow(e.boostTable, MAP_RPM.length, ...TABLE_LIMITS.boost),
     overrunCutAbove: Math.max(resume + 100, num(e.overrunCutAbove, 200, 3000, 700)),
     overrunResumeAbove: resume,
+    overrunDelay: num(e.overrunDelay, 0, 2, 0.3),
+    dashpot: num(e.dashpot, 0, 0.5, 0.3),
+    dashpotTime: num(e.dashpotTime, 0.1, 2.5, 0.7),
     idleSparkReserve: num(e.idleSparkReserve, 0, 15, 0),
     idleGain: num(e.idleGain, 0.3, 3, 1),
     crankLambda: num(e.crankLambda, 0.6, 1.1, 0.85),

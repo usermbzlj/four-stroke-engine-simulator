@@ -355,6 +355,9 @@ export class EngineCore {
   private injUsed = 0;
   private injBudget = 1;
   private cycDuty = 0;
+  /** Seconds since the engine caught, and since the throttle was shut. */
+  private sinceStart = 0;
+  private closedFor = 0;
 
   // --- ECU ---
   advance = 10;
@@ -709,7 +712,9 @@ export class EngineCore {
     this.camTarget = this.config.vvtRange > 0 ? clamp(tableAt(e.camTable, load, rpm), 0, this.config.vvtRange) : 0;
     this.boostTarget = this.config.turboSize > 0 ? curveAt(e.boostTable, rpm) * 1000 : 0;
 
-    if (e.overrunFuelCut && closed && rpm > e.idleRpm + e.overrunCutAbove && !this.antiLagOn) this.overrunCut = true;
+    // Never in the first seconds after a start: the flare would cut the engine dead.
+    const mayCut = this.sinceStart > 2 && this.closedFor >= e.overrunDelay;
+    if (e.overrunFuelCut && closed && mayCut && rpm > e.idleRpm + e.overrunCutAbove && !this.antiLagOn) this.overrunCut = true;
     if (!closed || rpm < e.idleRpm + e.overrunResumeAbove || !e.overrunFuelCut || this.antiLagOn) this.overrunCut = false;
 
     if (e.knockControl) this.knockRetard = Math.max(0, this.knockRetard - 0.12);
@@ -1156,7 +1161,9 @@ export class EngineCore {
     const target = this.ecu.idleRpm;
     // Dashpot: the butterfly is let down gently so a snap shut does not
     // drop the manifold into a vacuum the engine cannot fire in.
-    this.dashpot = Math.max(this.dashpot * Math.exp(-h / 0.7), this.throttleActual * 0.3);
+    this.dashpot = Math.max(this.dashpot * Math.exp(-h / this.ecu.dashpotTime), this.throttleActual * this.ecu.dashpot);
+    this.closedFor = this.controls.throttle < 0.02 ? this.closedFor + h : 0;
+    this.sinceStart = rpm > 450 ? this.sinceStart + h : 0;
     if (this.controls.starter && rpm < 500) {
       this.iac = this.iacBase * 1.6;
       return;
