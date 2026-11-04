@@ -90,6 +90,24 @@ export interface RaceResult {
 
 export type RacePhase = 'stage' | 'run' | 'done';
 
+/** What the live view needs of the ride, every frame. */
+export interface RideState {
+  phase: RacePhase | 'free';
+  event: RaceEventId | null;
+  rider: Rider;
+  /** Seconds since the start (negative while staged: the countdown). */
+  t: number;
+  x: number;
+  kmh: number;
+  gear: number;
+  slip: number;
+  pitch: number;
+  clutch: number;
+  cut: boolean;
+  frontLoad: number;
+  grade: number;
+}
+
 /** What the rider robot does without launch control: hold this share of the limiter. */
 const RIDER_LAUNCH_SHARE = 0.55;
 /** Clutch-in, off-throttle shift without a quick-shifter, s. */
@@ -158,6 +176,11 @@ export class RaceDirector {
       this.stageLeft = 0;
       this.phase = 'run';
     }
+  }
+
+  /** Seconds left on the start lights while staged. */
+  get countdown(): number {
+    return this.phase === 'stage' ? this.stageLeft : 0;
   }
 
   get kmh(): number {

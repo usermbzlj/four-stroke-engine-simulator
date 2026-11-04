@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { currentJob } from '../game/session';
 import { useGame } from '../game/store';
 import { MUFFLER_TEXT } from '../game/jobs';
-import { PARTS, buildCost, changedParts, money, partChanged, type Part } from '../game/parts';
+import { PARTS, money, partChanged, type Part } from '../game/parts';
 import { CONFIG_LIMITS, PRESETS, maxValveDiameters, type EngineConfig, type MufflerType } from '../sim/config';
 import { useBench } from '../state/benchStore';
 import { useControls } from '../state/controlStore';
 import { useLive } from '../state/liveStore';
 import { Choice, Slider } from './fields';
+import { Bill } from './Bill';
+import { ENGINE_UNLOCK, PART_REP, isEngineOpen, partOpen, useCareer } from '../game/career';
 
 type NumericKey = keyof typeof CONFIG_LIMITS;
 
@@ -77,29 +79,20 @@ export function BuildSheet(): React.ReactElement {
   const loadPreset = useBench((s) => s.loadPreset);
   const mode = useGame((s) => s.mode);
   useGame((s) => s.jobId);
+  useCareer((s) => s.rep);
+  useCareer((s) => s.ownedEngines);
   const job = currentJob();
   const status = useLive((s) => s.snapshot?.status ?? 'off');
   const turning = status === 'running' || status === 'cranking';
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const fit = maxValveDiameters(config);
   const factory = baseline.config;
-  const cost = buildCost(factory, config);
-  const changed = changedParts(factory, config);
 
   const set = <K extends keyof EngineConfig>(key: K) => (v: EngineConfig[K]) => setConfig({ [key]: v } as Partial<EngineConfig>);
 
   return (
     <div className="sheet">
-      <div className={`bill${job && cost > job.budget ? ' is-over' : ''}`}>
-        <div className="bill-total">
-          <span>零件花费</span>
-          <b>{money(cost)}</b>
-          {job && <span className="bill-budget">预算 {money(job.budget)}</span>}
-        </div>
-        <p className="bill-parts">
-          {changed.length === 0 ? '还是原装的。改任何参数等于买了那个零件；改回原值不收钱。' : changed.map((p) => `${p.name} ${money(p.price)}`).join('　')}
-        </p>
-      </div>
+      <Bill />
 
       {mode === 'sandbox' && (
         <Choice
@@ -107,14 +100,18 @@ export function BuildSheet(): React.ReactElement {
           value={presetId}
           disabled={turning}
           hint={turning ? '熄火以后才能换整台发动机。' : undefined}
-          options={[...PRESETS.map((p) => ({ value: p.id, label: p.name })), ...(presetId === 'custom' ? [{ value: 'custom', label: '自己改的' }] : [])]}
-          onChange={(id) => id !== 'custom' && loadPreset(id)}
+          options={[
+            ...PRESETS.map((p) => ({ value: p.id, label: isEngineOpen(p.id) ? p.name : `${p.name}（声望 ${ENGINE_UNLOCK[p.id]?.rep ?? 0}，车库里买）` })),
+            ...(presetId === 'custom' ? [{ value: 'custom', label: '自己改的' }] : []),
+          ]}
+          onChange={(id) => id !== 'custom' && isEngineOpen(id) && loadPreset(id)}
         />
       )}
 
       <ol className="parts">
         {PARTS.map((part) => {
-          const locked = job?.locked?.includes(part.id) ?? false;
+          const repLocked = mode === 'sandbox' && !partOpen(part.id) && !partChanged(part, factory, config);
+          const locked = (job?.locked?.includes(part.id) ?? false) || repLocked;
           const isChanged = partChanged(part, factory, config);
           const stopped = part.block && turning;
           const expanded = open[part.id] ?? false;
@@ -124,7 +121,7 @@ export function BuildSheet(): React.ReactElement {
                 <span className="part-name">
                   {part.name}
                   {isChanged && <em>已换</em>}
-                  {locked && <em className="part-lock">这单不许动</em>}
+                  {locked && <em className="part-lock">{repLocked ? `声望 ${PART_REP[part.id]} 解锁` : '这单不许动'}</em>}
                 </span>
                 <span className="part-price">{part.price > 0 ? money(part.price) : '免费'}</span>
                 <span className="part-sum">{summary(part, config)}</span>

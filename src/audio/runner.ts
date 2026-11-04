@@ -1,4 +1,6 @@
 import { EngineCore, type CoreEvent } from '../sim/core';
+import { RaceDirector, type RideState } from '../sim/race';
+import { VehicleSim } from '../sim/vehicle';
 import { copyTrace, takeSnapshot } from '../sim/snapshot';
 import type { EngineMessage, EngineSetup, HostCommand } from './protocol';
 import { EngineSynth } from './synth';
@@ -18,6 +20,12 @@ export class EngineRunner {
   private sentTrace = -1;
   private samples = 0;
   private readonly events: CoreEvent[] = [];
+  private veh: VehicleSim | null = null;
+  private dir: RaceDirector | null = null;
+  private playerThrottle = 0;
+  private readonly tickEvery: number;
+  private untilTick = 0;
+  private reported = false;
 
   constructor(
     sampleRate: number,
@@ -29,13 +37,88 @@ export class EngineRunner {
     this.snapshotEvery = Math.round(sampleRate / SNAPSHOT_HZ);
     this.core = new EngineCore(setup.config, setup.ecu, setup.bench);
     this.synth = withSound ? new EngineSynth(sampleRate, setup.config) : null;
+    this.tickEvery = Math.max(1, Math.round(sampleRate / 1000));
+  }
+
+  private detachRide(): void {
+    const core = this.core;
+    core.extLoad = null;
+    core.extCut = false;
+    core.extLimit = 0;
+    core.alsRequest = false;
+    this.veh = null;
+    this.dir = null;
+    core.controls.throttle = this.playerThrottle;
+  }
+
+  private ride(): RideState | null {
+    const v = this.veh;
+    if (!v) return null;
+    const d = this.dir;
+    return {
+      phase: d ? d.phase : 'free',
+      event: d ? d.event.id : null,
+      rider: d ? d.rider : 'auto',
+      t: d ? (d.phase === 'stage' ? -d.countdown : d.t) : 0,
+      x: v.x,
+      kmh: v.v * 3.6,
+      gear: v.gear,
+      slip: v.slip,
+      pitch: v.pitch,
+      clutch: v.clutch,
+      cut: this.core.extCut,
+      frontLoad: v.frontLoad,
+      grade: v.grade,
+    };
   }
 
   handle(cmd: HostCommand): void {
     const core = this.core;
     switch (cmd.type) {
       case 'controls':
-        Object.assign(core.controls, cmd.controls);
+        if (cmd.controls.throttle !== undefined) this.playerThrottle = cmd.controls.throttle;
+        {
+          const held = core.controls.throttle;
+          Object.assign(core.controls, cmd.controls);
+          // The rider robot keeps the grip during a run.
+          if (this.dir && this.dir.phase !== 'done' && this.dir.rider === 'auto') core.controls.throttle = held;
+        }
+        break;
+      case 'vehicle':
+        if (!cmd.vehicle) {
+          this.detachRide();
+        } else if (this.veh) {
+          this.veh.setConfig(cmd.vehicle);
+        } else {
+          this.veh = new VehicleSim(cmd.vehicle);
+          this.veh.gear = 0;
+          this.veh.clutch = 0;
+          this.veh.attach(core);
+          core.controls.brakeMode = 'off';
+        }
+        break;
+      case 'race':
+        if (this.veh) {
+          core.controls.brakeMode = 'off';
+          this.veh.braking = false;
+          this.dir = new RaceDirector(core, this.veh, cmd.event, cmd.rider, cmd.countdown);
+          this.reported = false;
+        }
+        break;
+      case 'raceAbort':
+        if (this.veh) {
+          this.dir = null;
+          core.extCut = false;
+          core.extLimit = 0;
+          core.alsRequest = false;
+          this.veh.clutch = 0;
+          this.veh.gear = 0;
+          this.veh.braking = true;
+          core.controls.throttle = this.playerThrottle;
+        }
+        break;
+      case 'shift':
+        this.dir?.shift(cmd.dir);
         break;
       case 'rebuild':
         core.rebuild(cmd.config);
@@ -69,6 +152,10 @@ export class EngineRunner {
     const synth = this.synth;
     for (let i = 0; i < n; i++) {
       core.step(this.dt);
+      if (this.veh && --this.untilTick <= 0) {
+        this.untilTick = this.tickEvery;
+        this.tickRide();
+      }
       if (synth && left && right) {
         synth.tick(core);
         left[i] = synth.outL;
@@ -82,9 +169,25 @@ export class EngineRunner {
     this.samples += n;
   }
 
+  private tickRide(): void {
+    const d = this.dir;
+    if (!d) return;
+    d.input = this.playerThrottle;
+    d.tick(this.tickEvery * this.dt);
+    if (d.phase === 'done' && !this.reported) {
+      this.reported = true;
+      const v = this.veh!;
+      v.clutch = 0;
+      v.gear = 0;
+      v.braking = true;
+      this.core.controls.throttle = this.playerThrottle;
+      this.post({ type: 'race', result: d.result });
+    }
+  }
+
   private flush(): void {
     const core = this.core;
-    this.post({ type: 'snapshot', snapshot: takeSnapshot(core, this.samples * this.dt) });
+    this.post({ type: 'snapshot', snapshot: takeSnapshot(core, this.samples * this.dt, this.ride()) });
     if (core.traceVersion !== this.sentTrace) {
       this.sentTrace = core.traceVersion;
       this.post({ type: 'trace', trace: copyTrace(core.lastTrace) });

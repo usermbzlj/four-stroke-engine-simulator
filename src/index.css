@@ -2577,3 +2577,304 @@ button.mode:hover {
     flex-basis: 100%;
   }
 }
+
+/* ---- stage switch, wallet ---------------------------------------------------- */
+
+.stage-switch {
+  grid-column: auto;
+  flex: none;
+}
+.stage-switch button {
+  padding: 4px 14px;
+}
+.topbar-wallet {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+  line-height: 1.15;
+}
+.topbar-wallet b {
+  font-family: var(--num);
+  font-size: 1.05rem;
+  color: var(--good);
+}
+.topbar-wallet span {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ---- race panel -------------------------------------------------------------- */
+
+.race-panel {
+  grid-area: scope;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+.race-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+}
+.race-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.race-events button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1.2;
+}
+.race-events button b {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.race-events button small {
+  font-family: var(--num);
+  font-size: 0.8rem;
+}
+.race-events button.is-on {
+  border-color: var(--heat);
+  color: var(--ink);
+  background: var(--raised);
+}
+.race-events button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.race-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.race-actions .choice {
+  grid-column: auto;
+}
+.race-ghost {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.race-blurb,
+.race-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.race-blurb b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.race-result {
+  display: grid;
+  grid-template-columns: auto minmax(280px, 1fr) minmax(160px, 300px);
+  gap: 12px;
+  align-items: center;
+}
+.race-big {
+  display: flex;
+  flex-direction: column;
+}
+.race-big span {
+  font-family: var(--num);
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.race-big small {
+  color: var(--muted);
+}
+.race-big small.is-good {
+  color: var(--good);
+}
+.race-big small.is-bad {
+  color: var(--knock);
+}
+.race-splits {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 2px 14px;
+  margin: 0;
+}
+.race-splits div {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+.race-splits dt {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.race-splits dd {
+  white-space: nowrap;
+}
+.race-splits dd {
+  margin: 0;
+  font-family: var(--num);
+  font-variant-numeric: tabular-nums;
+}
+.race-plot {
+  width: 100%;
+  height: 90px;
+  background: var(--bg);
+  border-radius: 6px;
+}
+.race-plot polyline {
+  fill: none;
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+}
+.race-plot-last {
+  stroke: var(--heat);
+}
+.race-plot-best {
+  stroke: var(--faint);
+  stroke-dasharray: 4 3;
+}
+
+/* ---- gear chart, garage ------------------------------------------------------ */
+
+.gear-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.gear-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 70px 110px;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+}
+.gear-row span {
+  color: var(--muted);
+}
+.gear-row i {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--intake), var(--heat));
+}
+.gear-row b {
+  font-family: var(--num);
+  font-weight: 600;
+  text-align: right;
+}
+.gear-row small {
+  color: var(--faint);
+  font-family: var(--num);
+}
+.unlocks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.unlocks li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.unlocks li b {
+  grid-column: 1;
+}
+.unlocks li span {
+  grid-column: 1;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.unlocks li > em,
+.unlocks li > button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+.unlocks li > em {
+  color: var(--good);
+  font-style: normal;
+  font-size: 0.85rem;
+}
+.medal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+.medal-table th,
+.medal-table td {
+  padding: 4px;
+  border-bottom: 1px solid var(--line);
+  text-align: center;
+}
+.medal-table th:first-child {
+  text-align: left;
+}
+.medal-table td small {
+  display: block;
+  color: var(--faint);
+  font-family: var(--num);
+  font-size: 0.7rem;
+}
+.medal--1 {
+  color: #d39b6a;
+}
+.medal--2 {
+  color: #c9d1d8;
+}
+.medal--3 {
+  color: #ffd166;
+  font-weight: 700;
+}
+.ledger {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.8rem;
+}
+.ledger li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line);
+}
+.ledger .is-in {
+  color: var(--good);
+}
+.ledger .is-out {
+  color: var(--knock);
+}

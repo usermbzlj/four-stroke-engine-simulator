@@ -4,7 +4,9 @@ import { useBench } from './benchStore';
 import { useControls } from './controlStore';
 import { useLive, type Metrics } from './liveStore';
 
-export type Drawer = 'build' | 'ecu' | 'dyno';
+export type Drawer = 'build' | 'ecu' | 'car' | 'dyno' | 'garage';
+/** What the middle of the bench shows: the engine on the dyno, or the bike on the strip. */
+export type Stage = 'dyno' | 'track';
 export type View = 'home' | 'board' | 'bench';
 
 /** The knob the user is working on, and how the engine was doing before they touched it. */
@@ -26,7 +28,9 @@ interface UiState {
   /** Keyboard help overlay. */
   help: boolean;
   drawer: Drawer | null;
+  stage: Stage;
   focus: Focus | null;
+  setStage: (s: Stage) => void;
   setView: (v: View) => void;
   setHelp: (on: boolean) => void;
   setDrawer: (d: Drawer | null) => void;
@@ -45,7 +49,9 @@ export const useUi = create<UiState>()((set, get) => ({
   view: 'home',
   help: false,
   drawer: null,
+  stage: 'dyno',
   focus: null,
+  setStage: (stage) => set({ stage }),
   setView: (view) => set({ view }),
   setHelp: (help) => set({ help }),
   setDrawer: (drawer) => set({ drawer }),

@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
 import { useControls } from '../state/controlStore';
-import { restoreEngine } from '../state/engineLink';
+import { abortRun, restoreEngine, shiftGear, startRun } from '../state/engineLink';
+import { useRace } from '../state/raceStore';
 import { useLive } from '../state/liveStore';
 import { useUi, type Drawer } from '../state/uiStore';
 import { useView } from '../state/viewStore';
 
-const DRAWER_KEYS: Record<string, Drawer> = { q: 'build', w: 'ecu', e: 'dyno' };
+const DRAWER_KEYS: Record<string, Drawer> = { q: 'build', w: 'ecu', a: 'car', e: 'dyno', g: 'garage' };
 
 /** A dialog owns the keyboard while it is open. */
 const modalOpen = (): boolean => document.querySelector('.modal, .failure') !== null;
@@ -57,6 +58,25 @@ export function useBenchInput(enabled: boolean): void {
       const ui = useUi.getState();
       if (key === '?' || (key === '/' && e.shiftKey)) {
         ui.setHelp(true);
+        return;
+      }
+      const onTrack = ui.stage === 'track';
+      const race = useRace.getState();
+      if (onTrack && key === 'escape' && race.live) {
+        abortRun();
+        return;
+      }
+      if (onTrack && key === 'enter' && !e.repeat && !race.live) {
+        startRun();
+        return;
+      }
+      if (onTrack && race.live && race.rider === 'manual' && (key === 'arrowup' || key === 'arrowdown')) {
+        e.preventDefault();
+        if (!e.repeat) shiftGear(key === 'arrowup' ? 1 : -1);
+        return;
+      }
+      if (key === 't' && !e.repeat) {
+        ui.setStage(onTrack ? 'dyno' : 'track');
         return;
       }
       if (key === 'escape' && ui.drawer) {

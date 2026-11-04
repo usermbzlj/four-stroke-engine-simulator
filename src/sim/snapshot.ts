@@ -1,4 +1,5 @@
 import type { CycleStats, CycleTrace, EngineCore, EngineStatus, Failure } from './core';
+import type { RideState } from './race';
 
 /** What the UI sees of the solver, ~60 times a second. */
 export interface EngineSnapshot {
@@ -27,9 +28,14 @@ export interface EngineSnapshot {
   floatRpm: number;
   failure: Failure | null;
   cycle: CycleStats | null;
+  boostKpa: number;
+  turboN: number;
+  camPhase: number;
+  /** Null on the dyno. */
+  ride: RideState | null;
 }
 
-export function takeSnapshot(core: EngineCore, time: number): EngineSnapshot {
+export function takeSnapshot(core: EngineCore, time: number, ride: RideState | null = null): EngineSnapshot {
   return {
     time,
     rpm: core.rpm,
@@ -55,6 +61,10 @@ export function takeSnapshot(core: EngineCore, time: number): EngineSnapshot {
     floatRpm: core.floatLimitRpm,
     failure: core.failure,
     cycle: core.lastCycle,
+    boostKpa: core.boostPa / 1000,
+    turboN: core.turboN,
+    camPhase: core.camPhase,
+    ride,
   };
 }
 

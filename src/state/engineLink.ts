@@ -2,7 +2,11 @@ import { create } from 'zustand';
 import { startEngineHost, type EngineHost } from '../audio/host';
 import type { EngineMessage, HostCommand } from '../audio/protocol';
 import { useMentor } from '../mentor/store';
-import { blockChanged } from '../sim/config';
+import { blockChanged, displacementCc } from '../sim/config';
+import type { RaceResult } from '../sim/race';
+import { CHASSIS } from '../sim/vehicle';
+import { bestKey, better, useRace, type RunRecord } from './raceStore';
+import { useUi } from './uiStore';
 import { useBench, type DynoRun } from './benchStore';
 import { effectiveThrottle, useControls } from './controlStore';
 import { useLive } from './liveStore';
@@ -41,8 +45,78 @@ function onMessage(msg: EngineMessage): void {
     case 'events':
       live.pushEvents(msg.events);
       break;
+    case 'race':
+      onRaceDone(msg.result);
+      break;
   }
 }
+
+// ---------------------------------------------------------------------------
+// The strip
+// ---------------------------------------------------------------------------
+
+type RaceListener = (rec: RunRecord, best: boolean, prevBest: RunRecord | undefined) => void;
+const raceListeners = new Set<RaceListener>();
+
+/** Called after every finished (or failed) run. Returns an unsubscribe function. */
+export function onRaceResult(fn: RaceListener): () => void {
+  raceListeners.add(fn);
+  return () => raceListeners.delete(fn);
+}
+
+export function buildLabel(): string {
+  const { config, vehicle } = useBench.getState();
+  const extras = [config.turboSize > 0 ? '涡轮' : '', config.vvtRange > 0 ? 'VVT' : '', vehicle.quickshifter ? '快排' : ''].filter(Boolean);
+  return [`${Math.round(displacementCc(config))}cc`, CHASSIS[vehicle.chassis].name, ...extras].join(' · ');
+}
+
+function onRaceDone(result: RaceResult): void {
+  const race = useRace.getState();
+  const rec: RunRecord = { result: { ...result, trace: result.trace }, build: buildLabel(), at: Date.now() };
+  const key = bestKey(useBench.getState().vehicle.chassis, result.event);
+  const prev = race.bests[key];
+  const isBest = better(result, prev?.result);
+  race.set({
+    live: false,
+    last: rec,
+    history: [rec, ...race.history].slice(0, 12),
+    ...(isBest ? { bests: { ...race.bests, [key]: rec } } : {}),
+  });
+  for (const fn of raceListeners) fn(rec, isBest, prev);
+}
+
+function sendVehicle(): void {
+  send({ type: 'vehicle', vehicle: useUi.getState().stage === 'track' ? useBench.getState().vehicle : null });
+}
+
+/** Stage a run: lights, launch, the lot. */
+export function startRun(): void {
+  if (useUi.getState().stage !== 'track') return;
+  const s = useLive.getState().snapshot;
+  if (!s || s.status !== 'running') return;
+  const r = useRace.getState();
+  useControls.getState().set({ brakeMode: 'off', sweeping: false });
+  send({ type: 'race', event: r.event, rider: r.rider, countdown: 3 });
+  r.set({ live: true });
+}
+
+export function abortRun(): void {
+  send({ type: 'raceAbort' });
+  useRace.getState().set({ live: false });
+}
+
+export function shiftGear(dir: number): void {
+  send({ type: 'shift', dir });
+}
+
+useUi.subscribe((s, prev) => {
+  if (s.stage === prev.stage) return;
+  if (s.stage === 'track') {
+    if (useControls.getState().sweeping) stopSweep(false);
+    useControls.getState().set({ brakeMode: 'off' });
+  } else useRace.getState().set({ live: false });
+  sendVehicle();
+});
 
 /** Collect brake torque while the cell holds speed at full throttle. */
 function recordPull(): void {
@@ -146,6 +220,7 @@ export async function startBench(): Promise<void> {
   host = await startEngineHost({ config, ecu, bench }, onMessage);
   host.send({ type: 'volume', volume });
   pushControls();
+  sendVehicle();
   useLink.setState({ started: true, audible: host.audible });
 }
 
@@ -175,6 +250,7 @@ useBench.subscribe((s, prev) => {
     clearPull();
   }
   if (s.ecu !== prev.ecu) send({ type: 'ecu', ecu: s.ecu });
+  if (s.vehicle !== prev.vehicle && useUi.getState().stage === 'track') sendVehicle();
   if (s.bench !== prev.bench) send({ type: 'bench', bench: s.bench });
   if (s.volume !== prev.volume) send({ type: 'volume', volume: s.volume });
 });

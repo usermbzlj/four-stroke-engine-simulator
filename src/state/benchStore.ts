@@ -12,6 +12,7 @@ import {
   type EngineConfig,
   type EnginePreset,
 } from '../sim/config';
+import { clampVehicle, DEFAULT_VEHICLE, type VehicleConfig } from '../sim/vehicle';
 
 export interface DynoRun {
   id: number;
@@ -27,6 +28,8 @@ export interface Baseline {
   name: string;
   config: EngineConfig;
   ecu: EcuConfig;
+  /** Missing on builds saved before the track existed. */
+  vehicle?: VehicleConfig;
 }
 
 interface BenchState {
@@ -35,12 +38,15 @@ interface BenchState {
   baseline: Baseline;
   config: EngineConfig;
   ecu: EcuConfig;
+  /** The machine the engine goes in on the track. */
+  vehicle: VehicleConfig;
   bench: BenchConfig;
   volume: number;
   runs: DynoRun[];
   loadPreset: (id: string) => void;
   /** Put a whole build on the stand (job start, sandbox restore). */
-  loadBuild: (b: { presetId: string; baseline: Baseline; config: EngineConfig; ecu: EcuConfig; bench?: BenchConfig; runs?: DynoRun[] }) => void;
+  loadBuild: (b: { presetId: string; baseline: Baseline; config: EngineConfig; ecu: EcuConfig; vehicle?: VehicleConfig; bench?: BenchConfig; runs?: DynoRun[] }) => void;
+  setVehicle: (patch: Partial<VehicleConfig>) => void;
   setConfig: (patch: Partial<EngineConfig>) => void;
   setEcu: (patch: Partial<EcuConfig>) => void;
   setBench: (patch: Partial<BenchConfig>) => void;
@@ -65,8 +71,15 @@ export function buildSig(config: EngineConfig, ecu: EcuConfig): string {
   return JSON.stringify([config, ecu]);
 }
 
-export function presetBaseline(p: EnginePreset): Baseline {
-  return { name: p.name, config: p.engine, ecu: p.ecu };
+export function presetBaseline(p: EnginePreset, vehicle: VehicleConfig = DEFAULT_VEHICLE): Baseline {
+  return { name: p.name, config: p.engine, ecu: p.ecu, vehicle };
+}
+
+/** The vehicle the parts bill counts from. */
+export function baseVehicle(b: Baseline, now: VehicleConfig): VehicleConfig {
+  const v = b.vehicle ?? DEFAULT_VEHICLE;
+  // A different chassis is a different bike: its own stock parts are the zero.
+  return v.chassis === now.chassis ? v : clampVehicle({ chassis: now.chassis });
 }
 
 /** The baseline as a preset, for code that compares against "factory". */
@@ -82,12 +95,13 @@ export const useBench = create<BenchState>()(
       baseline: presetBaseline(DEFAULT_PRESET),
       config: DEFAULT_PRESET.engine,
       ecu: DEFAULT_PRESET.ecu,
+      vehicle: DEFAULT_VEHICLE,
       bench: DEFAULT_BENCH,
       volume: 0.7,
       runs: [],
       loadPreset: (id) => {
         const p = PRESETS.find((x) => x.id === id) ?? DEFAULT_PRESET;
-        set({ presetId: p.id, baseline: presetBaseline(p), config: p.engine, ecu: p.ecu });
+        set({ presetId: p.id, baseline: presetBaseline(p, get().vehicle), config: p.engine, ecu: p.ecu });
       },
       loadBuild: (b) =>
         set({
@@ -95,11 +109,13 @@ export const useBench = create<BenchState>()(
           baseline: b.baseline,
           config: clampConfig(b.config),
           ecu: clampEcu(b.ecu),
+          vehicle: clampVehicle(b.vehicle ?? b.baseline.vehicle),
           bench: b.bench ?? DEFAULT_BENCH,
           runs: b.runs ?? [],
         }),
       setConfig: (patch) => set({ config: clampConfig({ ...get().config, ...patch }), presetId: 'custom' }),
       setEcu: (patch) => set({ ecu: clampEcu({ ...get().ecu, ...patch }) }),
+      setVehicle: (patch) => set({ vehicle: clampVehicle({ ...get().vehicle, ...patch }) }),
       setBench: (patch) => set({ bench: clampBench({ ...get().bench, ...patch }) }),
       setVolume: (v) => set({ volume: Math.min(1, Math.max(0, v)) }),
       addRun: (points, label) => {
@@ -121,6 +137,7 @@ export const useBench = create<BenchState>()(
         baseline: s.baseline,
         config: s.config,
         ecu: s.ecu,
+        vehicle: s.vehicle,
         bench: s.bench,
         volume: s.volume,
         runs: s.runs,
@@ -130,7 +147,12 @@ export const useBench = create<BenchState>()(
         const b = p.baseline;
         const baseline: Baseline =
           b && typeof b === 'object' && b.config && b.ecu
-            ? { name: typeof b.name === 'string' ? b.name : current.baseline.name, config: clampConfig({ ...current.config, ...b.config }), ecu: clampEcu({ ...current.ecu, ...b.ecu }) }
+            ? {
+                name: typeof b.name === 'string' ? b.name : current.baseline.name,
+                config: clampConfig({ ...current.config, ...b.config }),
+                ecu: clampEcu({ ...current.ecu, ...b.ecu }),
+                vehicle: clampVehicle(b.vehicle),
+              }
             : current.baseline;
         return {
           ...current,
@@ -138,6 +160,7 @@ export const useBench = create<BenchState>()(
           baseline,
           config: p.config ? clampConfig({ ...current.config, ...p.config }) : current.config,
           ecu: p.ecu ? clampEcu({ ...current.ecu, ...p.ecu }) : current.ecu,
+          vehicle: clampVehicle(p.vehicle),
           bench: p.bench ? clampBench({ ...current.bench, ...p.bench }) : current.bench,
           volume: typeof p.volume === 'number' ? Math.min(1, Math.max(0, p.volume)) : current.volume,
           runs: Array.isArray(p.runs) ? p.runs.slice(-MAX_RUNS) : current.runs,

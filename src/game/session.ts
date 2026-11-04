@@ -12,11 +12,12 @@ import { runAcceptance, type AcceptancePhase, type AcceptanceResult } from './ac
 import type { AcceptanceReply, AcceptanceRequest } from './acceptance.worker';
 import { grade, jobById, jobStart, type Grade, type Job } from './jobs';
 import { buildCost } from './parts';
+import { awardStars } from './career';
 import { useGame, type SavedBuild } from './store';
 
 function currentBuild(): SavedBuild {
   const b = useBench.getState();
-  return { presetId: b.presetId, baseline: b.baseline, config: b.config, ecu: b.ecu, bench: b.bench, runs: b.runs };
+  return { presetId: b.presetId, baseline: b.baseline, config: b.config, ecu: b.ecu, vehicle: b.vehicle, bench: b.bench, runs: b.runs };
 }
 
 function freshJobBuild(job: Job): SavedBuild {
@@ -171,6 +172,8 @@ function finish(job: Job, sig: string, cost: number, result: AcceptanceResult): 
       : {}),
   });
   useAcceptance.setState({ status: 'done', result, grade: g, fraction: 1, phase: 'done', curve: result.curve });
+  const paid = awardStars(job.id, job.title, g.stars);
+  if (paid > 0) say('job', 'good', `客户付了工钱 ¥${paid}。`, { head: '进账：' });
 }
 
 export function startAcceptance(): void {

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { BenchConfig, EcuConfig, EngineConfig } from '../sim/config';
+import type { VehicleConfig } from '../sim/vehicle';
 import type { Baseline, DynoRun } from '../state/benchStore';
 import type { AcceptanceResult } from './acceptance';
 import { JOBS } from './jobs';
@@ -20,6 +21,7 @@ export interface SavedBuild {
   baseline: Baseline;
   config: EngineConfig;
   ecu: EcuConfig;
+  vehicle?: VehicleConfig;
   bench: BenchConfig;
   runs: DynoRun[];
 }

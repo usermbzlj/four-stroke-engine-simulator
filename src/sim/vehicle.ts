@@ -224,6 +224,8 @@ export class VehicleSim {
   /** Front tyre load over static, 0 = light. */
   frontLoad = 1;
   crashed = false;
+  /** Rider on the brakes (after the finish). */
+  braking = false;
 
   constructor(cfg: VehicleConfig) {
     this.cfg = cfg;
@@ -283,9 +285,11 @@ export class VehicleSim {
     const fx = c.tireGrip * nr * tyreCurve(this.slip);
     this.ww += ((tc * Gr * DRIVE_EFF - fx * r) / WHEEL_INERTIA) * h;
     if (this.ww < 0 && this.v <= 0) this.ww = 0;
-    const drag = 0.5 * RHO_AIR * c.cdA * this.v * this.v + c.rollingRes * ntot * (this.v > 0.05 ? 1 : 0) + m * G * sin;
+    const brake = this.braking && this.v > 0 ? m * 7 : 0;
+    const drag = 0.5 * RHO_AIR * c.cdA * this.v * this.v + c.rollingRes * ntot * (this.v > 0.05 ? 1 : 0) + m * G * sin + brake;
     this.a = (fx - drag) / m;
     this.v = Math.max(0, this.v + this.a * h);
+    if (this.braking && this.clutch === 0) this.ww = this.v / r;
     this.x += this.v * h;
 
     // Pitch: the lifting moment about the rear contact against the front's weight.

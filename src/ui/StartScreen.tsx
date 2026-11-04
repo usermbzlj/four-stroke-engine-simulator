@@ -1,3 +1,4 @@
+import { ENGINE_UNLOCK, isEngineOpen } from '../game/career';
 import { JOBS } from '../game/jobs';
 import { enterJob, enterSandbox } from '../game/session';
 import { isUnlocked, totalStars, useGame } from '../game/store';
@@ -48,15 +49,18 @@ export function StartScreen(): React.ReactElement {
               <span className="mode-text">挑一单做，或者回去刷三星。</span>
             </button>
             <div className="mode mode--sandbox">
-              <span className="mode-title">自由试验台</span>
-              <span className="mode-text">没有客户，没有预算。随便改，随便炸。</span>
+              <span className="mode-title">自己的车库</span>
+              <span className="mode-text">台架上随便改、随便炸；上赛道跑零百、四百米、爬坡、极速，拿奖牌赚钱，解锁涡轮、可变正时、赛道车和卡丁车。</span>
               <div className="mode-engines">
-                {PRESETS.map((p) => (
-                  <button key={p.id} type="button" className="btn btn--small" onClick={() => sandbox(p.id)} title={p.blurb}>
-                    {p.name}
-                    <small>{displacementCc(p.engine).toFixed(0)} cc</small>
-                  </button>
-                ))}
+                {PRESETS.map((p) => {
+                  const open = isEngineOpen(p.id);
+                  return (
+                    <button key={p.id} type="button" className="btn btn--small" disabled={!open} onClick={() => sandbox(p.id)} title={open ? p.blurb : `声望 ${ENGINE_UNLOCK[p.id]?.rep ?? 0} 以后在车库里买`}>
+                      {p.name}
+                      <small>{open ? `${displacementCc(p.engine).toFixed(0)} cc` : '未解锁'}</small>
+                    </button>
+                  );
+                })}
                 {presetId === 'custom' && mode === 'sandbox' && (
                   <button type="button" className="btn btn--small" onClick={() => sandbox()}>
                     上次改的

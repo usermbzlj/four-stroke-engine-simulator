@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { startMentor } from './mentor/brain';
+import { startCareerHooks } from './game/careerHooks';
 import { useGame } from './game/store';
 import { jobById, JOBS } from './game/jobs';
 import { PRESETS, displacementCc } from './sim/config';
@@ -8,6 +9,12 @@ import { useLink } from './state/engineLink';
 import { useLive } from './state/liveStore';
 import { useUi, type Drawer } from './state/uiStore';
 import { BuildSheet } from './ui/BuildSheet';
+import { CarSheet } from './ui/CarSheet';
+import { GarageSheet } from './ui/GarageSheet';
+import { RacePanel } from './ui/RacePanel';
+import { TrackView } from './ui/TrackView';
+import { garageTitle, useCareer } from './game/career';
+import { money } from './game/parts';
 import { ControlStrip } from './ui/ControlStrip';
 import { DynoPanel } from './ui/DynoPanel';
 import { EcuPanel } from './ui/EcuPanel';
@@ -30,8 +37,40 @@ import { nudgeThrottle, useBenchInput } from './ui/useBenchInput';
 const DRAWERS: { id: Drawer; label: string; key: string }[] = [
   { id: 'build', label: '改装单', key: 'Q' },
   { id: 'ecu', label: 'ECU', key: 'W' },
+  { id: 'car', label: '整车', key: 'A' },
   { id: 'dyno', label: '测功', key: 'E' },
+  { id: 'garage', label: '车库', key: 'G' },
 ];
+
+function Wallet(): React.ReactElement {
+  const cash = useCareer((s) => s.money);
+  const rep = useCareer((s) => s.rep);
+  const setDrawer = useUi((s) => s.setDrawer);
+  const g = garageTitle(rep);
+  return (
+    <button type="button" className="topbar-wallet" onClick={() => setDrawer('garage')} title={g.next ? `声望 ${rep}，到 ${g.next} 升级` : `声望 ${rep}`}>
+      <b>{money(cash)}</b>
+      <span>
+        {g.title} · 声望 {rep}
+      </span>
+    </button>
+  );
+}
+
+function StageSwitch(): React.ReactElement {
+  const stage = useUi((s) => s.stage);
+  const setStage = useUi((s) => s.setStage);
+  return (
+    <div className="choice stage-switch" role="radiogroup" aria-label="场地">
+      <button type="button" role="radio" aria-checked={stage === 'dyno'} className={stage === 'dyno' ? 'is-on' : ''} onClick={() => setStage('dyno')} title="快捷键 T 切换">
+        台架
+      </button>
+      <button type="button" role="radio" aria-checked={stage === 'track'} className={stage === 'track' ? 'is-on' : ''} onClick={() => setStage('track')} title="快捷键 T 切换">
+        赛道
+      </button>
+    </div>
+  );
+}
 
 function Title(): React.ReactElement {
   const mode = useGame((s) => s.mode);
@@ -63,6 +102,7 @@ function Bench(): React.ReactElement {
   const setView = useUi((s) => s.setView);
   const setHelp = useUi((s) => s.setHelp);
   const mode = useGame((s) => s.mode);
+  const stage = useUi((s) => s.stage);
   const [shake, setShake] = useState(false);
   const lastFailure = useRef<string | null>(null);
 
@@ -85,6 +125,7 @@ function Bench(): React.ReactElement {
           <span aria-hidden="true">☰</span> 工单
         </button>
         <Title />
+        <StageSwitch />
         <nav className="topbar-tabs" aria-label="面板">
           {DRAWERS.map((d) => (
             <button
@@ -99,6 +140,7 @@ function Bench(): React.ReactElement {
             </button>
           ))}
         </nav>
+        <Wallet />
         <label className="topbar-volume">
           <span>{audible ? '音量' : '无声音'}</span>
           <input
@@ -127,14 +169,14 @@ function Bench(): React.ReactElement {
           onWheel={(e) => nudgeThrottle(e.deltaY < 0 ? 0.03 : -0.03)}
           title="滚轮调手油门"
         >
-          <EngineView shake={shake} />
+          {stage === 'track' ? <TrackView /> : <EngineView shake={shake} />}
         </div>
         <aside className="stage-gauges" aria-label="仪表">
           <Tach />
           <Readouts />
           <EventFeed />
         </aside>
-        <Scope />
+        {stage === 'track' ? <RacePanel /> : <Scope />}
 
         {drawer && (
           <aside className="drawer" aria-label={DRAWERS.find((d) => d.id === drawer)?.label}>
@@ -156,6 +198,8 @@ function Bench(): React.ReactElement {
             <div className="drawer-body">
               {drawer === 'build' && <BuildSheet />}
               {drawer === 'ecu' && <EcuPanel />}
+              {drawer === 'car' && <CarSheet />}
+              {drawer === 'garage' && <GarageSheet />}
               {drawer === 'dyno' && <DynoPanel />}
             </div>
           </aside>
@@ -179,7 +223,10 @@ export default function App(): React.ReactElement {
   useBenchInput(started && view === 'bench');
 
   useEffect(() => {
-    if (started) startMentor();
+    if (started) {
+      startMentor();
+      startCareerHooks();
+    }
   }, [started]);
 
   return (
