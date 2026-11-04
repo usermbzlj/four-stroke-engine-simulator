@@ -12,18 +12,22 @@
 
 import type { AcceptancePlan, AcceptanceResult } from '../game/acceptance';
 import { buildCost, PART_OF, PARTS, type PartId } from '../game/parts';
+import { RACE_EVENTS, type RaceEventId, type RaceResult } from '../sim/race';
+import { clampVehicle, VEHICLE_LIMITS, VEHICLE_PARTS, vehicleCost, type VehicleConfig, type VehiclePartId } from '../sim/vehicle';
 import { CONFIG_LIMITS, clampConfig, clampEcu, safeLimiterRpm, type EcuConfig, type EngineConfig, type MufflerType } from '../sim/config';
-import { effectiveGoals, gap, goalText, GOALS, planFor, quickPlanFor, score, type Brief, type Goal, type GoalCtx, type GoalKind, type Score } from './goals';
+import { effectiveGoals, eventsFor, gap, goalText, GOALS, planFor, quickPlanFor, score, type Brief, type Goal, type GoalCtx, type GoalKind, type Score } from './goals';
 
 export interface Build {
   config: EngineConfig;
   ecu: EcuConfig;
+  vehicle: VehicleConfig;
   /** Limiter 老周 would like; the fitted one never exceeds what the parts survive. */
   wish: number;
 }
 
 export interface Tried extends Build {
   result: AcceptanceResult;
+  races: Partial<Record<RaceEventId, RaceResult>>;
   cost: number;
   score: Score;
 }
@@ -31,12 +35,22 @@ export interface Tried extends Build {
 export interface EvalJob {
   config: EngineConfig;
   ecu: EcuConfig;
+  vehicle: VehicleConfig;
   plan: AcceptancePlan;
+  /** Timed runs to do as well. */
+  events: RaceEventId[];
+  /** Reuse this acceptance result: only the timed runs changed. */
+  reuse?: AcceptanceResult;
+}
+
+export interface EvalOut {
+  result: AcceptanceResult;
+  races: Partial<Record<RaceEventId, RaceResult>>;
 }
 
 export interface SearchHooks {
   /** Run these builds (in parallel if possible), results in the same order. */
-  evaluate: (jobs: EvalJob[]) => Promise<AcceptanceResult[]>;
+  evaluate: (jobs: EvalJob[]) => Promise<EvalOut[]>;
   /** How many builds to try at once. */
   width: number;
   log: (text: string) => void;
@@ -55,7 +69,7 @@ export interface SearchOutcome {
   stoppedEarly: boolean;
 }
 
-type Side = 'config' | 'ecu';
+type Side = 'config' | 'ecu' | 'vehicle';
 
 interface Knob {
   side: Side;
@@ -67,10 +81,23 @@ interface Knob {
   step?: [number, number];
   /** Discrete knobs: the values to try. */
   values?: readonly (number | string | boolean)[];
-  part?: PartId;
+  part?: PartId | VehiclePartId;
   /** How far a long jump goes when the search is stuck. */
   jump?: number;
+  /** Only worth trying when this holds (a turbo fitted, a phaser fitted...). */
+  when?: (b: Build) => boolean;
 }
+
+const V = (key: keyof typeof VEHICLE_LIMITS, name: string, unit: string, digits: number, step: [number, number], part?: VehiclePartId): Knob => ({
+  side: 'vehicle',
+  key,
+  name,
+  unit,
+  digits,
+  step,
+  ...(part ? { part } : {}),
+});
+const turbo = (b: Build): boolean => b.config.turboSize > 0;
 
 const N = (key: keyof EngineConfig, name: string, unit: string, digits: number, step: [number, number]): Knob => ({
   side: 'config',
@@ -133,6 +160,33 @@ const KNOBS: Knob[] = [
   N('rodStrength', '连杆强度', 'N', 0, [2500, 100]),
   N('fuelOctane', '燃油', '号', 0, [3, 1]),
   N('radiatorCapacity', '散热器', '×', 2, [0.2, 0.05]),
+  N('plenumVolume', '稳压腔', '×排量', 1, [1, 0.1]),
+  N('injectorFlow', '喷油嘴', 'cc/min', 0, [60, 10]),
+  N('vvtRange', '相位器行程', '°', 0, [15, 1]),
+  N('turboSize', '涡轮尺寸', '', 2, [0.3, 0.05]),
+  { ...N('intercooler', '中冷效率', '', 2, [0.2, 0.05]), when: turbo },
+  { side: 'ecu', key: 'boostAll', name: '增压目标', unit: 'kPa', digits: 0, step: [20, 5], jump: 60, when: turbo },
+  { side: 'ecu', key: 'antiLag', name: '防迟滞', unit: '', digits: 0, values: [true, false], when: turbo },
+  { side: 'ecu', key: 'overrunResumeAbove', name: '恢复供油转速', unit: 'rpm', digits: 0, step: [300, 50], jump: 900 },
+  { side: 'ecu', key: 'dashpot', name: '节气门缓冲', unit: '', digits: 2, step: [0.1, 0.02] },
+  { side: 'ecu', key: 'idleSparkReserve', name: '怠速点火储备', unit: '°', digits: 1, step: [4, 0.5] },
+  { side: 'ecu', key: 'idleGain', name: '怠速控制力度', unit: '', digits: 2, step: [0.5, 0.05] },
+  { side: 'ecu', key: 'accelEnrich', name: '加速加浓', unit: '', digits: 2, step: [0.3, 0.05] },
+  { side: 'ecu', key: 'launchRpm', name: '弹射转速', unit: 'rpm', digits: 0, step: [1500, 100], jump: 3000 },
+  { side: 'ecu', key: 'tractionControl', name: '牵引力控制', unit: '', digits: 2, step: [0.08, 0.01] },
+  { side: 'ecu', key: 'wheelieControl', name: '防抬头', unit: '', digits: 0, values: [true, false] },
+  { side: 'ecu', key: 'shiftAll', name: '换挡转速', unit: 'rpm', digits: 0, step: [800, 100], jump: 2000 },
+  V('finalDrive', '主减速比', '', 2, [0.4, 0.02], 'sprocket'),
+  { ...V('primary', '齿比间距', '', 2, [0.15, 0.02], 'gearbox'), key: 'gearSpread' },
+  { ...V('primary', '一挡', '', 2, [0.3, 0.02], 'gearbox'), key: 'firstGear' },
+  V('tireGrip', '轮胎抓地', 'μ', 2, [0.15, 0.02], 'tires'),
+  V('mass', '整备质量', 'kg', 0, [15, 1], 'diet'),
+  V('cgHeight', '重心高度', 'm', 2, [0.08, 0.01], 'geometry'),
+  V('wheelbase', '轴距', 'm', 2, [0.08, 0.01], 'geometry'),
+  V('cdA', '风阻面积', 'm²', 2, [0.08, 0.01], 'fairing'),
+  V('clutchCapacity', '离合器传扭', 'Nm', 0, [30, 5], 'clutch'),
+  V('clutchRelease', '放离合时间', '秒', 2, [0.25, 0.05]),
+  { side: 'vehicle', key: 'quickshifter', name: '快排', unit: '', digits: 0, values: [true, false], part: 'quickshifter' },
   {
     side: 'ecu',
     key: 'advanceOffset',
@@ -226,16 +280,20 @@ const BREATHING = [
   'knockControl',
 ];
 const TOP_END = ['valveSpringForce', 'reciprocatingMass', 'rodStrength', 'limiterRpm'];
+const FORCED = ['injectorFlow', 'turboSize', 'intercooler', 'boostAll', 'plenumVolume', 'vvtRange', 'cruiseLambda'];
+const IDLE = ['idleRpm', 'overrunResumeAbove', 'dashpot', 'idleSparkReserve', 'idleGain', 'flywheelInertia', 'overrunFuelCut', 'accelEnrich'];
+const LAUNCH = ['launchRpm', 'tractionControl', 'wheelieControl', 'clutchRelease', 'firstGear', 'finalDrive', 'tireGrip', 'cgHeight', 'wheelbase', 'clutchCapacity', 'antiLag'];
+const RUN = [...BREATHING, ...TOP_END, ...FORCED, 'shiftAll', 'gearSpread', 'finalDrive', 'mass', 'quickshifter', 'cdA', 'flywheelInertia', 'accelEnrich'];
 
 /** Which knobs can move each goal. */
 const RELEVANT: Record<GoalKind, string[]> = {
-  peakHp: [...BREATHING, ...TOP_END],
-  hpAt: [...BREATHING, ...TOP_END],
-  peakTorque: BREATHING,
-  torqueAt: BREATHING,
+  peakHp: [...BREATHING, ...TOP_END, ...FORCED],
+  hpAt: [...BREATHING, ...TOP_END, ...FORCED],
+  peakTorque: [...BREATHING, ...FORCED],
+  torqueAt: [...BREATHING, ...FORCED],
   limiterMin: [...TOP_END, 'rodLength'],
   limiterMax: ['limiterRpm'],
-  idleMin: ['idleRpm', 'flywheelInertia', 'cruiseLambda', 'lobeSeparation', 'intakeCenterline'],
+  idleMin: [...IDLE, 'cruiseLambda', 'lobeSeparation', 'intakeCenterline'],
   freeRev: ['flywheelInertia', 'idleRpm', 'throttleDiameter', 'reciprocatingMass'],
   pops: ['overrunFuelCut', 'wotLambda', 'limiterMode', 'muffler', 'exhaustHeaderLength', 'exhaustHeaderDiameter', 'cruiseLambda'],
   budget: [],
@@ -244,15 +302,29 @@ const RELEVANT: Record<GoalKind, string[]> = {
   piston: ['advanceOffset', 'knockControl', 'compressionRatio', 'fuelOctane'],
   rod: ['limiterRpm', 'reciprocatingMass', 'rodStrength'],
   coolant: ['radiatorCapacity'],
+  blipMin: IDLE,
+  raceTime: [...RUN, ...LAUNCH],
+  topSpeed: [...RUN.filter((k) => k !== 'firstGear')],
 };
 
-function knobsFor(brief: Brief): Knob[] {
-  const keys = new Set(effectiveGoals(brief.goals).flatMap((g) => RELEVANT[g.kind]));
+export function knobsFor(brief: Brief, start?: Tried): Knob[] {
+  // The safety floor only brings its knobs in when it is actually broken.
+  const live = effectiveGoals(brief.goals).filter((g) => brief.goals.includes(g) || !start || (gap(g, ctxOf(start)) ?? 0) > 0);
+  const keys = new Set(live.flatMap((g) => RELEVANT[g.kind]));
   return KNOBS.filter((k) => {
     if (!keys.has(k.key)) return false;
     if (k.side === 'ecu') return brief.ecu && !(k.key in brief.lock);
-    return k.part !== undefined && brief.parts.includes(k.part);
+    if (k.side === 'vehicle') return k.part === undefined || brief.vehicleParts.includes(k.part as VehiclePartId);
+    return k.part !== undefined && brief.parts.includes(k.part as PartId);
   });
+}
+
+/** Gear ratios rebuilt from a first gear and a geometric spread to the others. */
+function regear(v: VehicleConfig, first: number, spread: number): number[] {
+  return v.gears.map((_, i) => first / Math.pow(spread, i));
+}
+function spreadOf(v: VehicleConfig): number {
+  return Math.pow(v.gears[0]! / v.gears[v.gears.length - 1]!, 1 / (v.gears.length - 1));
 }
 
 /** Fit the build within the brief and what the parts survive. */
@@ -271,17 +343,40 @@ export function repair(b: Build, brief: Brief): Build {
     ...brief.lock,
     limiterRpm: Math.min(wish, safe),
   });
-  return { config, ecu, wish };
+  // Vehicle parts the brief does not allow stay as they were.
+  let vehicle = clampVehicle(b.vehicle);
+  for (const p of VEHICLE_PARTS) {
+    if (brief.vehicleParts.includes(p.id)) continue;
+    for (const k of p.keys) (vehicle as unknown as Record<string, unknown>)[k] = brief.vehicle[k];
+  }
+  vehicle = clampVehicle(vehicle);
+  return { config, ecu, vehicle, wish };
 }
 
 function read(b: Build, k: Knob): number | string | boolean {
-  return (k.side === 'config' ? (b.config as unknown as Record<string, unknown>) : (b.ecu as unknown as Record<string, unknown>))[k.key] as
-    number | string | boolean;
+  if (k.key === 'boostAll') return Math.max(...b.ecu.boostTable);
+  if (k.key === 'shiftAll') return b.ecu.shiftRpm[0]! > 0 ? b.ecu.shiftRpm[0]! : b.ecu.limiterRpm - 150;
+  if (k.key === 'gearSpread') return Math.round(spreadOf(b.vehicle) * 100) / 100;
+  if (k.key === 'firstGear') return b.vehicle.gears[0]!;
+  const src = k.side === 'config' ? b.config : k.side === 'ecu' ? b.ecu : b.vehicle;
+  return (src as unknown as Record<string, unknown>)[k.key] as number | string | boolean;
 }
 
 function write(b: Build, k: Knob, v: number | string | boolean): Build {
   if (k.side === 'ecu' && k.key === 'limiterRpm') return { ...b, wish: v as number };
-  return k.side === 'config' ? { ...b, config: { ...b.config, [k.key]: v } } : { ...b, ecu: { ...b.ecu, [k.key]: v } };
+  if (k.key === 'boostAll') {
+    const top = Math.max(1, ...b.ecu.boostTable);
+    const n = Math.max(0, Math.min(200, v as number));
+    // Keep the shape, move the level; a flat table becomes a flat target.
+    const t = Math.max(...b.ecu.boostTable) > 0 ? b.ecu.boostTable.map((x) => Math.round((x / top) * n)) : b.ecu.boostTable.map(() => n);
+    return { ...b, ecu: { ...b.ecu, boostTable: t } };
+  }
+  if (k.key === 'shiftAll') return { ...b, ecu: { ...b.ecu, shiftRpm: b.ecu.shiftRpm.map(() => Math.max(2000, Math.round((v as number) / 50) * 50)) } };
+  if (k.key === 'gearSpread') return { ...b, vehicle: { ...b.vehicle, gears: regear(b.vehicle, b.vehicle.gears[0]!, Math.max(1.05, v as number)) } };
+  if (k.key === 'firstGear') return { ...b, vehicle: { ...b.vehicle, gears: regear(b.vehicle, v as number, spreadOf(b.vehicle)) } };
+  if (k.side === 'config') return { ...b, config: { ...b.config, [k.key]: v } };
+  if (k.side === 'ecu') return { ...b, ecu: { ...b.ecu, [k.key]: v } };
+  return { ...b, vehicle: { ...b.vehicle, [k.key]: v } };
 }
 
 function show(k: Knob, v: number | string | boolean): string {
@@ -313,8 +408,10 @@ function snap(k: Knob, v: number): number {
   return Math.round(v / fine) * fine;
 }
 
+const sig = (b: Build): string => JSON.stringify([b.config, b.ecu, b.vehicle]);
+
 function sameBuild(a: Build, b: Build): boolean {
-  return JSON.stringify([a.config, a.ecu]) === JSON.stringify([b.config, b.ecu]);
+  return sig(a) === sig(b);
 }
 
 /** The one-line story of what a change did, in terms of the goal it moved most. */
@@ -331,15 +428,17 @@ function headline(goals: Goal[], before: Tried, after: Tried): string {
   const m = GOALS[best.g.kind];
   const v0 = m.measure(best.g, ctxOf(before));
   const v1 = m.measure(best.g, ctxOf(after));
-  const name = m.hasRpm
-    ? `${Math.round(best.g.rpm ?? 0)} rpm ${best.g.kind === 'torqueAt' ? '扭矩' : '功率'}`
-    : m.name.replace(/至多|至少|最低不掉到|上限/, '');
+  const name = goalName(best.g);
   const f = (v: number | null): string => (v === null ? '—' : m.digits === 0 ? Math.round(v).toLocaleString('en-US') : v.toFixed(m.digits));
   return `${name} ${f(v0)} → ${f(v1)}${best.g.kind === 'budget' ? '' : ` ${m.unit}`}`;
 }
 
 export function ctxOf(t: Tried): GoalCtx {
-  return { config: t.config, ecu: t.ecu, cost: t.cost, result: t.result };
+  return { config: t.config, ecu: t.ecu, cost: t.cost, result: t.result, races: t.races };
+}
+
+export function costOf(brief: Brief, b: Build): number {
+  return buildCost(brief.baseline, b.config) + vehicleCost(brief.vehicleBaseline, b.vehicle);
 }
 
 function partsText(baseline: EngineConfig, config: EngineConfig): string {
@@ -354,6 +453,7 @@ function partsText(baseline: EngineConfig, config: EngineConfig): string {
 export async function search(brief: Brief, from: Build, hooks: SearchHooks, budget = 300): Promise<SearchOutcome> {
   const goals = brief.goals;
   const quickPlan = quickPlanFor(effectiveGoals(goals), brief.plan);
+  const events = eventsFor(goals);
   const fullPlan: AcceptancePlan = {
     ...planFor(effectiveGoals(goals), brief.plan),
   };
@@ -381,22 +481,23 @@ export async function search(brief: Brief, from: Build, hooks: SearchHooks, budg
 
   const run = async (builds: Build[], plan: AcceptancePlan): Promise<Tried[]> => {
     const fixed = builds.map((b) => repair(b, brief));
-    const todo = fixed.filter((b) => plan !== quickPlan || !seen.has(JSON.stringify([b.config, b.ecu])));
-    const results = todo.length ? await hooks.evaluate(todo.map((b) => ({ config: b.config, ecu: b.ecu, plan }))) : [];
+    const todo = fixed.filter((b) => plan !== quickPlan || !seen.has(sig(b)));
+    const results = todo.length ? await hooks.evaluate(todo.map((b) => ({ config: b.config, ecu: b.ecu, vehicle: b.vehicle, plan, events }))) : [];
     if (plan === quickPlan) tried += todo.length;
     const fresh = todo.map((b, i): Tried => {
-      const cost = buildCost(brief.baseline, b.config);
-      const result = results[i]!;
+      const cost = costOf(brief, b);
+      const { result, races } = results[i]!;
       return {
         ...b,
         result,
+        races,
         cost,
-        score: judge({ config: b.config, ecu: b.ecu, cost, result }),
+        score: judge({ config: b.config, ecu: b.ecu, cost, result, races }),
       };
     });
     if (plan !== quickPlan) return fresh;
-    for (const t of fresh) seen.set(JSON.stringify([t.config, t.ecu]), t);
-    return fixed.map((b) => seen.get(JSON.stringify([b.config, b.ecu]))!);
+    for (const t of fresh) seen.set(sig(t), t);
+    return fixed.map((b) => seen.get(sig(b))!);
   };
 
   hooks.stage('先把原样跑一遍');
@@ -409,7 +510,7 @@ export async function search(brief: Brief, from: Build, hooks: SearchHooks, budg
   }
   hooks.progress(cur, tried, budget);
 
-  const knobs = knobsFor(brief);
+  const knobs = knobsFor(brief, cur);
   const step = new Map<Knob, number>(knobs.filter((k) => k.step).map((k) => [k, k.step![0]]));
   const done = new Set<Knob>();
   /** Knobs in the order they get tried; winners move to the front. */
@@ -419,20 +520,24 @@ export async function search(brief: Brief, from: Build, hooks: SearchHooks, budg
   let metAt = -1;
   let verified: Tried;
   // Free things first (the ECU, the fuel); parts only when that is not enough.
-  const isFree = (k: Knob): boolean => k.side === 'ecu' || PARTS.find((p) => p.id === k.part)?.price === 0;
+  const isFree = (k: Knob): boolean => k.side === 'ecu' || (k.side === 'vehicle' && !k.part) || PARTS.find((p) => p.id === k.part)?.price === 0;
   const active = new Set(knobs.some(isFree) && knobs.some((k) => !isFree(k)) ? knobs.filter(isFree) : knobs);
 
   let shakes = 0;
   const jumpOf = (k: Knob): number => {
     if (k.jump) return k.jump;
-    const [lo, hi] = CONFIG_LIMITS[k.key as keyof typeof CONFIG_LIMITS];
-    return (hi - lo) / 4;
+    if (k.side === 'config') {
+      const [lo, hi] = CONFIG_LIMITS[k.key as keyof typeof CONFIG_LIMITS];
+      return (hi - lo) / 4;
+    }
+    const lim = VEHICLE_LIMITS[k.key as keyof typeof VEHICLE_LIMITS];
+    return lim ? (lim[1] - lim[0]) / 4 : k.step![0] * 3;
   };
   /** Long jumps on every numeric knob; take the best if any helps. */
   const jump = async (): Promise<boolean> => {
     const moves: Move[] = [];
     for (const k of queue) {
-      if (!k.step || !active.has(k)) continue;
+      if (!k.step || !active.has(k) || (k.when && !k.when(cur))) continue;
       const base = k.key === 'limiterRpm' ? cur.wish : (read(cur, k) as number);
       for (const d of [1, -1]) {
         const m: Move = { knob: k, dir: d, value: snap(k, base + d * jumpOf(k)) };
@@ -473,7 +578,7 @@ export async function search(brief: Brief, from: Build, hooks: SearchHooks, budg
         stoppedEarly = true;
         break;
       }
-      const live = queue.filter((k) => active.has(k) && !done.has(k));
+      const live = queue.filter((k) => active.has(k) && !done.has(k) && (!k.when || k.when(cur)));
       // The free phase gets a third of the tries at most.
       if (active.size < knobs.length && (live.length === 0 || tried > budget * 0.3)) {
         if (cur.score.allMet) break;
@@ -610,7 +715,27 @@ export async function search(brief: Brief, from: Build, hooks: SearchHooks, budg
       hooks.stage('看看哪些零件可以不换');
       for (;;) {
         if (hooks.stopped()) break;
-        const changed = PARTS.filter((p) => p.price > 0 && p.keys.some((k) => brief.baseline[k] !== cur.config[k]));
+        // Engine and vehicle parts alike, each with what putting it back means.
+        const changed: { name: string; price: number; back: (b: Build) => Build }[] = [
+          ...PARTS.filter((p) => p.price > 0 && p.keys.some((k) => brief.baseline[k] !== cur.config[k])).map((p) => ({
+            name: p.name,
+            price: p.price,
+            back: (b: Build): Build => {
+              const config = { ...b.config };
+              for (const k of p.keys) (config as Record<string, unknown>)[k] = brief.baseline[k];
+              return { ...b, config };
+            },
+          })),
+          ...VEHICLE_PARTS.filter((p) => p.keys.some((k) => JSON.stringify(brief.vehicleBaseline[k]) !== JSON.stringify(cur.vehicle[k]))).map((p) => ({
+            name: p.name,
+            price: p.price,
+            back: (b: Build): Build => {
+              const vehicle = { ...b.vehicle };
+              for (const k of p.keys) (vehicle as Record<string, unknown>)[k] = brief.vehicleBaseline[k];
+              return { ...b, vehicle };
+            },
+          })),
+        ];
         if (changed.length === 0) break;
         // Each part put back, with the spark re-found around it: a part
         // that changed the knock limit leaves the old spark wrong.
@@ -619,11 +744,10 @@ export async function search(brief: Brief, from: Build, hooks: SearchHooks, budg
         const owner: number[] = [];
         const trials: Build[] = [];
         changed.forEach((p, i) => {
-          const config = { ...cur.config };
-          for (const k of p.keys) (config as Record<string, unknown>)[k] = brief.baseline[k];
+          const back = p.back(cur);
           for (const o of offsets) {
             owner.push(i);
-            trials.push({ ...cur, config, ecu: { ...cur.ecu, advanceOffset: Math.max(-20, Math.min(20, cur.ecu.advanceOffset + o)) } });
+            trials.push({ ...back, ecu: { ...back.ecu, advanceOffset: Math.max(-20, Math.min(20, cur.ecu.advanceOffset + o)) } });
           }
         });
         const res = await run(trials, quickPlan);
@@ -675,6 +799,14 @@ export async function search(brief: Brief, from: Build, hooks: SearchHooks, budg
   return { best: cur, start: start!, verified, tried, stoppedEarly };
 }
 
+/** Short name of what a goal measures, for log lines. */
+export function goalName(g: Goal): string {
+  const m = GOALS[g.kind];
+  if (m.hasRpm) return `${Math.round(g.rpm ?? 0)} rpm ${g.kind === 'torqueAt' ? '扭矩' : '功率'}`;
+  if (g.kind === 'raceTime') return RACE_EVENTS[g.event ?? 'drag100'].name;
+  return m.name.replace(/至多|至少|最低不掉到|上限|不低于/, '');
+}
+
 /** One line: every goal's value, ✔ or ✘. */
 export function summary(goals: Goal[], t: Tried): string {
   const out: string[] = [];
@@ -684,7 +816,7 @@ export function summary(goals: Goal[], t: Tried): string {
     const v = m.measure(g, ctxOf(t));
     if (v === null) continue;
     const d = gap(g, ctxOf(t))!;
-    const name = m.hasRpm ? `${Math.round(g.rpm ?? 0)} rpm ${g.kind === 'torqueAt' ? '扭矩' : '功率'}` : m.name.replace(/至多|至少|最低不掉到|上限/, '');
+    const name = goalName(g);
     const f = m.digits === 0 ? Math.round(v).toLocaleString('en-US') : v.toFixed(m.digits);
     out.push(`${name} ${g.kind === 'budget' ? `¥${f}` : `${f} ${m.unit}`}${d <= 0 ? '✔' : '✘'}`);
   }

@@ -128,7 +128,7 @@ export function MentorPanel(): React.ReactElement {
           className={`mentor-toggle${protect ? ' is-on' : ''}`}
           onClick={() => set({ protect: !protect })}
           aria-pressed={protect}
-          title={protect ? '要炸之前老周会接手。关掉才能真的炸。' : '老周只提醒，不出手。'}
+          title={protect ? '要炸之前老周会接手；自己的车熄火了，他会自己查原因、改好、重新打着。关掉才能真的炸。' : '老周只提醒，不出手。'}
         >
           保护{protect ? '开' : '关'}
         </button>

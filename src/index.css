@@ -3040,3 +3040,10 @@ button.mode:hover {
 .drawer.drawer--wide {
   width: min(660px, 100%);
 }
+.quest-event {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+}

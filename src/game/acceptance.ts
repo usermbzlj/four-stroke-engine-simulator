@@ -34,6 +34,8 @@ export interface AcceptancePlan {
   onlyPoints?: number[];
   /** Skip the blip-and-release stall check after idle. */
   noBlip?: boolean;
+  /** Solver seed (cycle-to-cycle scatter); 7 is the official one. */
+  seed?: number;
 }
 
 /** What the cell logged at one sweep point, for diagnosis. */
@@ -130,7 +132,7 @@ export function runAcceptance(
   onProgress?: (p: AcceptanceProgress) => void,
 ): AcceptanceResult {
   const bench: BenchConfig = { ...DEFAULT_BENCH, ...plan.bench };
-  const core = new EngineCore(config, ecu, bench, 7);
+  const core = new EngineCore(config, ecu, bench, plan.seed ?? 7);
   core.controls.protect = false;
   // Customers' engines arrive warm, conditioner or not.
   core.coolantC = Math.max(core.coolantC, 88);

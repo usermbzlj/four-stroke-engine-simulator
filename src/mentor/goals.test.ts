@@ -4,6 +4,9 @@ import { JOBS, jobStart } from '../game/jobs';
 import { PRESETS, safeLimiterRpm } from '../sim/config';
 import { briefForJob, score, type Goal } from './goals';
 import { repair, search } from './search';
+import { CHASSIS } from '../sim/vehicle';
+
+const vehicle = CHASSIS.street.base;
 
 const fake = (peakHp: number): AcceptanceResult => ({
   started: true,
@@ -74,7 +77,7 @@ describe('search', () => {
   it('never fits a limiter above what the parts survive', () => {
     const job = JOBS.find((j) => j.id === 'redline')!;
     const s = jobStart(job);
-    const b = repair({ config: s.config, ecu: s.ecu, wish: 16000 }, briefForJob(job, s.config));
+    const b = repair({ config: s.config, ecu: s.ecu, vehicle, wish: 16000 }, briefForJob(job, s.config));
     expect(b.ecu.limiterRpm).toBeLessThanOrEqual(safeLimiterRpm(b.config));
   });
 
@@ -82,11 +85,11 @@ describe('search', () => {
     const job = JOBS.find((j) => j.id === 'timid')!;
     const s = jobStart(job);
     const brief = briefForJob(job, s.config);
-    const b = repair({ config: s.config, ecu: { ...s.ecu, knockControl: true }, wish: s.ecu.limiterRpm }, brief);
+    const b = repair({ config: s.config, ecu: { ...s.ecu, knockControl: true }, vehicle, wish: s.ecu.limiterRpm }, brief);
     expect(b.ecu.knockControl).toBe(false);
     const c = JOBS.find((j) => j.id === 'courier')!;
     const cs = jobStart(c);
-    expect(repair({ config: { ...cs.config, fuelOctane: 100 }, ecu: cs.ecu, wish: 9000 }, briefForJob(c, cs.config)).config.fuelOctane).toBe(92);
+    expect(repair({ config: { ...cs.config, fuelOctane: 100 }, ecu: cs.ecu, vehicle, wish: 9000 }, briefForJob(c, cs.config)).config.fuelOctane).toBe(92);
   });
 
   it(
@@ -97,9 +100,9 @@ describe('search', () => {
       const brief = briefForJob(job, s.config);
       const out = await search(
         brief,
-        { config: s.config, ecu: s.ecu, wish: s.ecu.limiterRpm },
+        { config: s.config, ecu: s.ecu, vehicle, wish: s.ecu.limiterRpm },
         {
-          evaluate: async (jobs) => jobs.map((j) => runAcceptance(j.config, j.ecu, j.plan)),
+          evaluate: async (jobs) => jobs.map((j) => ({ result: runAcceptance(j.config, j.ecu, j.plan), races: {} })),
           width: 6,
           log: () => {},
           stage: () => {},

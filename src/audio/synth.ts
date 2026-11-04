@@ -64,6 +64,9 @@ export class EngineSynth {
   private pPrev = 101325;
 
   private popEnv = 0;
+  private turboPhase = 0;
+  private bov = 0;
+  private readonly bovHiss: Biquad;
   private popThumpPhase = 0;
   private readonly popLp: OnePole;
 
@@ -93,6 +96,7 @@ export class EngineSynth {
     this.inLp = new OnePole(900, fs);
     this.inHp = new OnePole(35, fs);
     this.hiss = Biquad.bandpass(2600, 0.9, fs);
+    this.bovHiss = Biquad.bandpass(4200, 1.4, fs);
     this.suckHiss = Biquad.bandpass(1700, 1.2, fs);
     this.block = Biquad.bandpass(1600, 1.4, fs);
     this.seatRing = Biquad.bandpass(3400, 14, fs);
@@ -192,7 +196,19 @@ export class EngineSynth {
       starter = this.starterLp.lowpass(saw + noise * 0.3) * 0.12;
     }
 
-    const dry = (exhaust + intake + combustion + knock + ticks + starter) * INPUT_GAIN;
+    // ---- turbo: compressor whine with shaft speed, blow-off hiss on a snap shut ----
+    let turbo = 0;
+    if (core.turboN > 0.02) {
+      const f = 1800 + core.turboN * 9000;
+      this.turboPhase += f / fs;
+      if (this.turboPhase > 1) this.turboPhase -= 1;
+      turbo = Math.sin(this.turboPhase * 2 * Math.PI) * core.turboN * core.turboN * (0.004 + (core.boostPa / 1e5) * 0.006);
+    }
+    if (core.boostPa > 15000 && core.controls.throttle < 0.1 && core.turboN > 0.3) this.bov = Math.min(1, this.bov + 0.002);
+    else this.bov *= 0.9995;
+    if (this.bov > 0.001) turbo += this.bovHiss.process(noise) * this.bov * 0.05;
+
+    const dry = (exhaust + intake + combustion + knock + ticks + starter + turbo) * INPUT_GAIN;
     this.room.process(dry);
     const l = this.dcL.highpass(dry + this.room.outL * 0.35);
     const r = this.dcR.highpass(dry + this.room.outR * 0.35);

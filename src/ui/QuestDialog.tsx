@@ -4,6 +4,8 @@ import { GOAL_ORDER, GOALS, SAFETY, type Goal, type GoalKind } from '../mentor/g
 import { draftNow, jobDraft, lockedParts, startQuest, useQuest, type Draft } from '../mentor/quest';
 import { poolWidth } from '../mentor/pool';
 import { useBench } from '../state/benchStore';
+import { RACE_EVENTS, RACE_ORDER, type RaceEventId } from '../sim/race';
+import { CHASSIS, VEHICLE_PARTS, type VehiclePartId } from '../sim/vehicle';
 
 const STEP: Record<GoalKind, number> = {
   peakHp: 0.5,
@@ -21,16 +23,28 @@ const STEP: Record<GoalKind, number> = {
   piston: 0.5,
   rod: 0.5,
   coolant: 1,
+  blipMin: 50,
+  raceTime: 0.1,
+  topSpeed: 1,
 };
 
 /** Kinds that only make sense once. */
-const MULTI = new Set<GoalKind>(['torqueAt', 'hpAt']);
+const MULTI = new Set<GoalKind>(['torqueAt', 'hpAt', 'raceTime']);
 
 function GoalRow({ g, onChange, onRemove }: { g: Goal; onChange: (g: Goal) => void; onRemove: () => void }): React.ReactElement {
   const m = GOALS[g.kind];
   return (
     <li className="quest-goal">
-      <span className="quest-goal-name">{m.hasRpm ? (g.kind === 'torqueAt' ? '扭矩' : '功率') : m.name}</span>
+      <span className="quest-goal-name">{m.hasRpm ? (g.kind === 'torqueAt' ? '扭矩' : '功率') : g.kind === 'raceTime' ? '' : m.name}</span>
+      {g.kind === 'raceTime' && (
+        <select className="quest-event" value={g.event ?? 'drag100'} onChange={(e) => onChange({ ...g, event: e.target.value as RaceEventId })} aria-label="比赛项目">
+          {RACE_ORDER.filter((id) => id !== 'top').map((id) => (
+            <option key={id} value={id}>
+              {RACE_EVENTS[id].name}
+            </option>
+          ))}
+        </select>
+      )}
       {m.hasRpm && (
         <label className="quest-num quest-num--rpm">
           <input
@@ -82,6 +96,7 @@ function Editor({ initial }: { initial: Draft }): React.ReactElement {
   const [d, setD] = useState<Draft>(initial);
   const [adding, setAdding] = useState<GoalKind | ''>('');
   const ecu = useBench((s) => s.ecu);
+  const vehicleChassis = useBench((s) => s.vehicle.chassis);
 
   useEffect(() => {
     const key = (e: KeyboardEvent): void => {
@@ -103,13 +118,19 @@ function Editor({ initial }: { initial: Draft }): React.ReactElement {
   const setGoal = (i: number, g: Goal): void => setD({ ...d, goals: d.goals.map((x, j) => (j === i ? g : x)) });
   const add = (kind: GoalKind): void => {
     const ctx = { config: useBench.getState().config, ecu, cost: 0, result: null };
-    const g: Goal = { kind, value: GOALS[kind].suggest(ctx), must: kind !== 'budget', ...(GOALS[kind].hasRpm ? { rpm: kind === 'torqueAt' ? 3000 : Math.round((ecu.limiterRpm * 0.85) / 250) * 250 } : {}) };
+    const g: Goal = {
+      kind,
+      value: GOALS[kind].suggest(ctx),
+      must: kind !== 'budget',
+      ...(GOALS[kind].hasRpm ? { rpm: kind === 'torqueAt' ? 3000 : Math.round((ecu.limiterRpm * 0.85) / 250) * 250 } : {}),
+      ...(kind === 'raceTime' ? { event: 'drag100' as const } : {}),
+    };
     setD({ ...d, goals: [...d.goals, g] });
   };
   const togglePart = (id: PartId): void => setD({ ...d, parts: d.parts.includes(id) ? d.parts.filter((p) => p !== id) : [...d.parts, id] });
   const valid = d.goals.length > 0 && d.goals.every((g) => Number.isFinite(g.value) && (!GOALS[g.kind].hasRpm || (g.rpm ?? 0) > 0));
   const safetyNote = SAFETY.filter((s) => !d.goals.some((g) => g.kind === s.kind))
-    .map((s) => `${GOALS[s.kind].name.replace('至多', '')} ≤ ${s.value}%`)
+    .map((s) => (s.kind === 'blipMin' ? '轰油门松开不熄火' : `${GOALS[s.kind].name.replace('至多', '')} ≤ ${s.value}%`))
     .join('、');
   const width = poolWidth();
 
@@ -121,7 +142,7 @@ function Editor({ initial }: { initial: Draft }): React.ReactElement {
           <div>
             <h2 id="quest-title">给老周定目标</h2>
             <p>
-              说清楚要什么、哪些零件能动。老周会在后面的台架上一套一套地试（{width} 台同时跑），改凸轮、换零件、调 ECU，找到达标又省钱的那套，然后给你装上。
+              说清楚要什么、哪些零件能动。老周先体检找毛病，再在台架上逐点标定点火、空燃比、凸轮和增压，对症换零件，算换挡点、试起步，最后细调并换个日子复核（{width} 台同时跑）。轰油门不熄火是他自己守的底线。
             </p>
           </div>
         </header>
@@ -197,7 +218,24 @@ function Editor({ initial }: { initial: Draft }): React.ReactElement {
               );
             })}
           </div>
-          <p className="quest-note">只动跟目标有关的地方。零件钱按跟{fromJob ? '接单时' : '出厂'}比换了哪些算。</p>
+          <div className="quest-sec-head">
+            <h3>车上能动的（{CHASSIS[vehicleChassis].name}）</h3>
+          </div>
+          <div className="quest-parts">
+            {VEHICLE_PARTS.map((p) => {
+              const on = (d.vehicleParts ?? VEHICLE_PARTS.map((x) => x.id)).includes(p.id);
+              const toggle = (id: VehiclePartId): void => {
+                const cur = d.vehicleParts ?? VEHICLE_PARTS.map((x) => x.id);
+                setD({ ...d, vehicleParts: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] });
+              };
+              return (
+                <button key={p.id} type="button" className={`quest-chip${on ? ' is-on' : ''}`} aria-pressed={on} title={p.pitch} onClick={() => toggle(p.id)}>
+                  {p.name} <small>{money(p.price)}</small>
+                </button>
+              );
+            })}
+          </div>
+          <p className="quest-note">只动跟目标有关的地方。零件钱按跟{fromJob ? '接单时' : '出厂'}比换了哪些算。有比赛目标时，老周会在后台把每套方案都拉到赛道上跑一遍。</p>
         </section>
 
         <footer className="quest-foot">

@@ -6,20 +6,25 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { currentJob } from '../game/session';
-import { buildCost, changedParts, money, PARTS, type PartId } from '../game/parts';
+import { changedParts, money, PARTS, type PartId } from '../game/parts';
+import { changedVehicleParts, VEHICLE_PARTS, type VehicleConfig, type VehiclePartId } from '../sim/vehicle';
+import { baseVehicle } from '../state/benchStore';
+import { engineer } from './engineer/engineer';
 import { useBench } from '../state/benchStore';
 import type { EcuConfig, EngineConfig } from '../sim/config';
 import { crankForMe, mentorEdit } from './actions';
 import { useLive } from '../state/liveStore';
 import { briefForJob, effectiveGoals, gap, GOALS, type Brief, type Goal } from './goals';
 import { openPool, type Pool } from './pool';
-import { ctxOf, search, summary, type Tried } from './search';
+import { costOf, ctxOf, summary, type Tried } from './search';
 import { addDespair, say, useMentor } from './store';
 
 export interface Draft {
   goals: Goal[];
   parts: PartId[];
   ecu: boolean;
+  /** Vehicle parts he may change (older drafts: all). */
+  vehicleParts?: VehiclePartId[];
 }
 
 export interface GoalRow {
@@ -49,7 +54,7 @@ interface QuestState {
   jobs: Record<string, Draft>;
   run: QuestRun | null;
   /** Build before 老周's last fit, for undo. */
-  undo: { config: EngineConfig; ecu: EcuConfig } | null;
+  undo: { config: EngineConfig; ecu: EcuConfig; vehicle: VehicleConfig } | null;
 }
 
 export const useQuest = create<QuestState>()(
@@ -61,6 +66,7 @@ export const useQuest = create<QuestState>()(
 );
 
 const ALL_PARTS = PARTS.map((p) => p.id);
+const ALL_VEHICLE = VEHICLE_PARTS.map((p) => p.id);
 
 /** What the editor opens with. */
 export function draftNow(): Draft {
@@ -69,7 +75,7 @@ export function draftNow(): Draft {
   if (job) {
     if (q.jobs[job.id]) return q.jobs[job.id]!;
     const b = briefForJob(job, useBench.getState().baseline.config);
-    return { goals: b.goals, parts: b.parts, ecu: true };
+    return { goals: b.goals, parts: b.parts, ecu: true, vehicleParts: b.vehicleParts };
   }
   return (
     q.sandbox ?? {
@@ -79,6 +85,7 @@ export function draftNow(): Draft {
       ],
       parts: ALL_PARTS.filter((p) => p !== 'fuel'),
       ecu: true,
+      vehicleParts: ALL_VEHICLE,
     }
   );
 }
@@ -93,7 +100,7 @@ export function jobDraft(): Draft | null {
   const job = currentJob();
   if (!job) return null;
   const b = briefForJob(job, useBench.getState().baseline.config);
-  return { goals: b.goals, parts: b.parts, ecu: true };
+  return { goals: b.goals, parts: b.parts, ecu: true, vehicleParts: b.vehicleParts };
 }
 
 export function lockedParts(): PartId[] {
@@ -112,6 +119,9 @@ function briefFrom(d: Draft): Brief {
     mufflers: base?.mufflers ?? null,
     plan: job ? job.plan : { bench: b.bench },
     baseline: b.baseline.config,
+    vehicle: b.vehicle,
+    vehicleBaseline: baseVehicle(b.baseline, b.vehicle),
+    vehicleParts: d.vehicleParts ?? ALL_VEHICLE,
   };
 }
 
@@ -152,16 +162,17 @@ export function abandonQuest(): void {
 export function undoQuest(): void {
   const u = useQuest.getState().undo;
   if (!u) return;
-  fit(u.config, u.ecu);
+  fit(u.config, u.ecu, u.vehicle);
   useQuest.setState({ undo: null });
   say('quest', 'say', '换回去了，还是你原来那套。');
 }
 
-function fit(config: EngineConfig, ecu: EcuConfig): void {
+function fit(config: EngineConfig, ecu: EcuConfig, vehicle: VehicleConfig): void {
   mentorEdit(() => {
     const b = useBench.getState();
     b.setConfig(config);
     b.setEcu(ecu);
+    b.setVehicle(vehicle);
   });
 }
 
@@ -175,22 +186,23 @@ export async function startQuest(d: Draft): Promise<void> {
   const id = ++runId;
   const mine = openPool();
   pool = mine;
-  const budget = Math.max(150, Math.min(300, 60 + 40 * mine.width));
+  const budget = Math.max(160, Math.min(320, 80 + 40 * mine.width));
   useQuest.setState({
     editing: false,
     run: { stage: '准备', log: [], tried: 0, budget, rows: rows(brief.goals, null, null), survived: true, cost: 0, stopping: false },
   });
   useMentor.getState().set({ open: true });
-  say('quest', 'say', `交给我。我在后面的台架上一套一套地试，${mine.width} 台同时跑，你这边照常玩。`);
+  say('quest', 'say', `交给我。先体检，再逐点标定，然后对症换零件，最后细调和复核。后面 ${mine.width} 台台架同时跑，你这边照常玩。`);
 
   let start: Tried | null = null;
-  const from = { config: b.config, ecu: b.ecu, wish: b.ecu.limiterRpm };
+  const from = { config: b.config, ecu: b.ecu, vehicle: b.vehicle, wish: b.ecu.limiterRpm };
   try {
-    const out = await search(
+    const out = await engineer(
       brief,
       from,
       {
         evaluate: (jobs) => mine.evaluate(jobs),
+        tasks: (config, ecu, specs) => mine.tasks(config, ecu, specs),
         width: mine.width,
         log: (t) => {
           const r = useQuest.getState().run;
@@ -228,18 +240,18 @@ function finish(brief: Brief, d: Draft, start: Tried, v: Tried, tried: number): 
     });
     return;
   }
-  useQuest.setState({ undo: { config: before.config, ecu: before.ecu } });
-  const parts = changedParts(before.baseline.config, v.config);
-  const changedNow = changedParts(before.config, v.config);
+  useQuest.setState({ undo: { config: before.config, ecu: before.ecu, vehicle: before.vehicle } });
+  const parts = [...changedParts(before.baseline.config, v.config), ...changedVehicleParts(brief.vehicleBaseline, v.vehicle)];
+  const changedNow = [...changedParts(before.config, v.config), ...changedVehicleParts(before.vehicle, v.vehicle).map((p) => ({ ...p, block: false }))];
   const block = changedNow.some((p) => p.block);
   if (before.runs.length === 0 || before.runs.at(-1)?.label !== '老周前') before.addRun(start.result.curve, '老周前');
   const wasRunning = useLive.getState().snapshot?.status === 'running';
-  fit(v.config, v.ecu);
+  fit(v.config, v.ecu, v.vehicle);
   useBench.getState().addRun(v.result.curve, '老周方案');
   // Block parts stop the crank; start it again the way it was.
   if (block && wasRunning) void crankForMe();
 
-  const cost = buildCost(brief.baseline, v.config);
+  const cost = costOf(brief, v);
   const met = v.score.allMet;
   const mustOk = v.score.mustMet;
   const missed = effectiveGoals(goals).filter((g) => (gap(g, ctxOf(v)) ?? 0) > 0);

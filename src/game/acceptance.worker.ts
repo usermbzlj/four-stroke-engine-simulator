@@ -15,11 +15,13 @@ export interface AcceptanceRequest {
   race?: { vehicle: VehicleConfig; event: RaceEventId };
   /** Run one of 老周's measurement tasks instead. */
   task?: TaskSpec;
+  /** After the schedule, these timed runs too (work orders judged on the strip). */
+  alsoRaces?: { vehicle: VehicleConfig; events: RaceEventId[] };
 }
 
 export type AcceptanceReply =
   | { id: number; type: 'progress'; progress: AcceptanceProgress }
-  | { id: number; type: 'done'; result: AcceptanceResult }
+  | { id: number; type: 'done'; result: AcceptanceResult; races?: Partial<Record<RaceEventId, RaceResult>> }
   | { id: number; type: 'raced'; result: RaceResult }
   | { id: number; type: 'task'; result: TaskOut }
   | { id: number; type: 'error'; message: string };
@@ -27,7 +29,7 @@ export type AcceptanceReply =
 const post = (msg: AcceptanceReply): void => (self as unknown as Worker).postMessage(msg);
 
 self.onmessage = (e: MessageEvent<AcceptanceRequest>) => {
-  const { id, config, ecu, plan, quiet, race, task } = e.data;
+  const { id, config, ecu, plan, quiet, race, task, alsoRaces } = e.data;
   try {
     if (task) {
       post({ id, type: 'task', result: runTask(config, ecu, task) });
@@ -35,7 +37,11 @@ self.onmessage = (e: MessageEvent<AcceptanceRequest>) => {
       post({ id, type: 'raced', result: runRace(config, ecu, race.vehicle, race.event) });
     } else {
       const result = runAcceptance(config, ecu, plan, quiet ? undefined : (progress) => post({ id, type: 'progress', progress }));
-      post({ id, type: 'done', result });
+      const races: Partial<Record<RaceEventId, RaceResult>> = {};
+      if (alsoRaces && result.started && !result.failure) {
+        for (const ev of alsoRaces.events) races[ev] = runRace(config, ecu, alsoRaces.vehicle, ev);
+      }
+      post({ id, type: 'done', result, races });
     }
   } catch (err) {
     post({ id, type: 'error', message: err instanceof Error ? err.message : String(err) });

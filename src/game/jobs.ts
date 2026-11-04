@@ -18,11 +18,13 @@ import {
 } from '../sim/config';
 import { type AcceptancePlan, type AcceptanceResult, hpOf, torqueAt } from './acceptance';
 import type { PartId } from './parts';
+import { DNF_TEXT, RACE_EVENTS, type RaceEventId, type RaceResult } from '../sim/race';
+import type { VehicleConfig } from '../sim/vehicle';
 import type { GoalKind } from '../mentor/goals';
 
 /** What a check asks for, in a form 老周's search can aim at. */
 export interface CheckSpec {
-  goal?: { kind: GoalKind; value: number; rpm?: number };
+  goal?: { kind: GoalKind; value: number; rpm?: number; event?: RaceEventId };
   /** ECU settings the customer fixed. */
   lock?: Partial<EcuConfig>;
   mufflers?: MufflerType[];
@@ -33,6 +35,7 @@ export interface CheckCtx {
   ecu: EcuConfig;
   cost: number;
   result: AcceptanceResult | null;
+  races?: Partial<Record<RaceEventId, RaceResult>>;
 }
 
 export interface CheckOutcome {
@@ -136,6 +139,30 @@ export const C = {
     }, { goal: { kind: 'ccMax', value: cc } }),
 };
 
+/** A timed run's verdict from the acceptance's races. */
+function raced(label: string, event: RaceEventId, judge: (r: RaceResult) => CheckOutcome, spec: CheckSpec): Check {
+  return {
+    label,
+    needsTest: true,
+    eval: ({ result, races }) => {
+      const r = races?.[event];
+      if (!result || !r) return { pass: null, actual: '待验收' };
+      if (r.dnf) return { pass: false, actual: DNF_TEXT[r.dnf] };
+      return judge(r);
+    },
+    spec,
+  };
+}
+
+export const RACE_CHECKS = {
+  time: (event: RaceEventId, sec: number): Check =>
+    raced(`${RACE_EVENTS[event].name} ≤ ${sec.toFixed(2)} 秒`, event, (r) => ({ pass: (r.time ?? Infinity) <= sec, actual: `${(Math.ceil((r.time ?? 0) * 100 - 1e-9) / 100).toFixed(2)} 秒` }), {
+      goal: { kind: 'raceTime', value: sec, event },
+    }),
+  top: (kmh: number): Check =>
+    raced(`极速 ≥ ${kmh} km/h`, 'top', (r) => ({ pass: r.topKmh >= kmh, actual: `${(Math.floor(r.topKmh * 10) / 10).toFixed(1)} km/h` }), { goal: { kind: 'topSpeed', value: kmh } }),
+};
+
 export const MUFFLER_TEXT: Record<MufflerType, string> = { stock: '原厂', sport: '运动', open: '直通' };
 
 export interface Job {
@@ -155,6 +182,10 @@ export interface Job {
   budget: number;
   /** Parts the job forbids touching. */
   locked?: PartId[];
+  /** The customer's bike, for jobs judged on the strip. */
+  vehicle?: Partial<VehicleConfig>;
+  /** Timed runs the acceptance includes. */
+  races?: RaceEventId[];
 }
 
 export interface JobStart {
@@ -308,6 +339,63 @@ export const JOBS: Job[] = [
     rules: [C.survive(), C.octaneMax(98), C.peakHp(55)],
     bonus: C.peakHp(62),
     budget: 7000,
+  },
+  {
+    id: 'launch',
+    title: '起步总打滑',
+    client: '直线加速队 · 小黑',
+    brief: '450 装在赛道车上，一放离合后轮就冒烟，有时候还抬头。零百进不了 4.7 秒，比赛没法跑。',
+    tip: '到「整车」里看：弹射起步转速、放离合的快慢、牵引力控制和防抬头都不要钱。先上赛道看它是打滑还是抬头，再对症。',
+    presetId: 'race-450',
+    plan: {},
+    vehicle: { chassis: 'race' },
+    races: ['drag100'],
+    rules: [C.survive(), RACE_CHECKS.time('drag100', 4.7)],
+    bonus: RACE_CHECKS.time('drag100', 4.45),
+    budget: 800,
+  },
+  {
+    id: 'hillclimb',
+    title: '爬坡赛',
+    client: '山里的车队 · 老韩',
+    brief: '一公里、12% 的坡。这台 650 劲够大，可一换挡就掉出扭矩带，跑 40 秒，我要 37 秒以内。',
+    tip: '画「整车」里的各挡车速：每次换挡转速掉到哪？650 转不高，挡位要排得紧，换挡点要按扭矩曲线来，不是撞到断火才换。',
+    presetId: 'thumper-650',
+    plan: {},
+    vehicle: { chassis: 'street' },
+    races: ['hill'],
+    rules: [C.survive(), RACE_CHECKS.time('hill', 37)],
+    bonus: RACE_CHECKS.time('hill', 35),
+    budget: 1500,
+  },
+  {
+    id: 'topspeed',
+    title: '跑得再快点',
+    client: '送外卖的 · 小周',
+    brief: '跑高速太慢了，这台 250 拧到底也就 115。上 125，能再多就更好。',
+    tip: '极速是功率和风阻的平衡，也是末挡齿比的事：末挡要让发动机正好在功率峰附近顶住。整流罩比你想的管用。',
+    presetId: 'street-250',
+    plan: {},
+    vehicle: { chassis: 'street' },
+    races: ['top'],
+    rules: [C.survive(), RACE_CHECKS.top(125)],
+    bonus: RACE_CHECKS.top(131),
+    budget: 1500,
+  },
+  {
+    id: 'turbo250',
+    title: '涡轮小钢炮',
+    client: '改装店老板 · 阿杰',
+    brief: '我想要一台四百米跑进 16 秒的 250。不准换缸，用涡轮。活塞要活着。',
+    tip: '涡轮、中冷、喷油嘴是一套。压缩比降下来，点火退下来，然后让老周逐点找点火和增压。别忘了起步：涡轮车起步要先把增压憋起来。',
+    presetId: 'street-250',
+    plan: {},
+    vehicle: { chassis: 'street' },
+    races: ['quarter'],
+    rules: [C.survive(), C.piston(3), RACE_CHECKS.time('quarter', 16)],
+    bonus: RACE_CHECKS.time('quarter', 15.3),
+    budget: 9000,
+    locked: ['bore', 'crank'],
   },
 ];
 

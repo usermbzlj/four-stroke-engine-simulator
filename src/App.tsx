@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { startMentor } from './mentor/brain';
 import { startCareerHooks } from './game/careerHooks';
+import { startRaceCoach } from './mentor/raceCoach';
 import { useGame } from './game/store';
 import { jobById, JOBS } from './game/jobs';
 import { PRESETS, displacementCc } from './sim/config';
@@ -226,6 +227,7 @@ export default function App(): React.ReactElement {
     if (started) {
       startMentor();
       startCareerHooks();
+      startRaceCoach();
     }
   }, [started]);
 

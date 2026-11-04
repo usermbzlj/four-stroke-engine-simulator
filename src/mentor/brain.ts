@@ -18,6 +18,7 @@ import { PARAM_NOTES } from './params';
 import { addDespair, dismissKey, say, sinceSaid, useMentor, type MentorAction } from './store';
 import { Stopped, tuneLambda, tuneSpark, type Sample, type TunerPort } from './tuner';
 import * as V from './voice';
+import { autopilotOn, isRescuing, rescueStall } from './autopilot';
 import { useGame } from '../game/store';
 
 const TICK_MS = 250;
@@ -328,14 +329,19 @@ function watchEngine(t: number, dt: number): void {
     t - w.offSince >= 0.6 &&
     s.rpm < 400
   ) {
-    const stall = currentIssues().find((i) => i.id === 'idle-stall');
-    say('stall', 'warn', `${V.pick(V.STALL)}${stall ? ` ${stall.text}` : ''}`, {
-      cooldown: 15,
-      actions: [
-        ...(stall ? stall.fixes.map((f) => fixAction(f, true)) : [fixAction({ label: '怠速 +300', ecu: { idleRpm: ecu.idleRpm + 300 } })]),
-        { label: '我来起动', run: () => void crankForMe() },
-      ],
-    });
+    if (autopilotOn() && useUi.getState().stage === 'dyno') {
+      if (!isRescuing() && sinceSaid('stall') > 8) void rescueStall(V.pick(V.STALL).replace(/。$/, ''));
+    } else {
+      const stall = currentIssues().find((i) => i.id === 'idle-stall');
+      say('stall', 'warn', `${V.pick(V.STALL)}${stall ? ` ${stall.text}` : ''}`, {
+        cooldown: 15,
+        actions: [
+          { label: '老周来查', run: () => void rescueStall(), primary: true },
+          ...(stall ? stall.fixes.map((f) => fixAction(f)) : [fixAction({ label: '怠速 +300', ecu: { idleRpm: ecu.idleRpm + 300 } })]),
+          { label: '我来起动', run: () => void crankForMe() },
+        ],
+      });
+    }
   }
   if (s.status === 'running' && w.prevStatus !== 'running') w.runningSince = t;
   if (s.status === 'running') w.seenRunning = true;

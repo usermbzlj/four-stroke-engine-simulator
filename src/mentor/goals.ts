@@ -9,6 +9,8 @@ import { hpOf, torqueAt, type AcceptancePlan, type AcceptanceResult } from '../g
 import type { Job } from '../game/jobs';
 import { PARTS, type PartId } from '../game/parts';
 import { displacementCc, type EcuConfig, type EngineConfig, type MufflerType } from '../sim/config';
+import { RACE_EVENTS, type RaceEventId, type RaceResult } from '../sim/race';
+import { VEHICLE_PARTS, clampVehicle, type VehicleConfig, type VehiclePartId } from '../sim/vehicle';
 
 export type GoalKind =
   | 'peakHp'
@@ -25,13 +27,18 @@ export type GoalKind =
   | 'octaneMax'
   | 'piston'
   | 'rod'
-  | 'coolant';
+  | 'coolant'
+  | 'blipMin'
+  | 'raceTime'
+  | 'topSpeed';
 
 export interface Goal {
   kind: GoalKind;
   value: number;
   /** For the at-rpm goals. */
   rpm?: number;
+  /** For timed-run goals. */
+  event?: RaceEventId;
   /** A must counts three times a nice-to-have. */
   must: boolean;
 }
@@ -41,6 +48,8 @@ export interface GoalCtx {
   ecu: EcuConfig;
   cost: number;
   result: AcceptanceResult | null;
+  /** Timed runs, when the goals need them. */
+  races?: Partial<Record<RaceEventId, RaceResult>>;
 }
 
 interface GoalMeta {
@@ -55,6 +64,17 @@ interface GoalMeta {
   /** Typical first value when the player adds this goal. */
   suggest: (c: GoalCtx) => number;
   hasRpm?: boolean;
+  /** Needs a timed run on the strip. */
+  hasEvent?: boolean;
+}
+
+/** A timed run's number; a run that did not finish counts as far off. */
+function raceValue(g: Goal, c: GoalCtx): number | null {
+  if (!c.races) return null;
+  const r = c.races[g.event ?? 'drag100'];
+  if (!r) return null;
+  if (r.dnf) return g.kind === 'topSpeed' ? r.topKmh * 0.7 : Math.max(g.value * 1.6, (r.time ?? RACE_EVENTS[r.event].timeLimit) * 1.2);
+  return g.kind === 'topSpeed' ? r.topKmh : r.time!;
 }
 
 const r50 = (v: number): number => Math.round(v / 50) * 50;
@@ -189,6 +209,38 @@ export const GOALS: Record<GoalKind, GoalMeta> = {
     measure: (_g, c) => (c.result ? c.result.rodFatigue * 100 : null),
     suggest: () => 2,
   },
+  blipMin: {
+    name: '轰油回怠速不低于',
+    unit: 'rpm',
+    dir: 'min',
+    digits: 0,
+    scale: (v) => Math.max(300, v * 0.5),
+    measure: (_g, c) => (c.result ? (c.result.blip ? c.result.blip.min : (c.result.idle?.min ?? 0)) : null),
+    suggest: (c) => r50(Math.max(800, c.ecu.idleRpm * 0.7)),
+  },
+  raceTime: {
+    name: '比赛用时',
+    unit: '秒',
+    dir: 'max',
+    digits: 2,
+    hasEvent: true,
+    scale: (v) => Math.max(0.5, v * 0.12),
+    measure: (g, c) => raceValue(g, c),
+    suggest: (c) => {
+      const r = c.races?.drag100;
+      return r?.time ? Math.round(r.time * 0.9 * 10) / 10 : 8;
+    },
+  },
+  topSpeed: {
+    name: '极速',
+    unit: 'km/h',
+    dir: 'min',
+    digits: 1,
+    hasEvent: true,
+    scale: (v) => Math.max(10, v * 0.1),
+    measure: (g, c) => raceValue({ ...g, event: 'top' }, c),
+    suggest: (c) => Math.ceil((c.races?.top?.topKmh ?? 120) * 1.08),
+  },
   coolant: {
     name: '水温至多',
     unit: '°C',
@@ -217,6 +269,9 @@ export const GOAL_ORDER: GoalKind[] = [
   'rod',
   'limiterMax',
   'coolant',
+  'blipMin',
+  'raceTime',
+  'topSpeed',
 ];
 
 export function fmtGoalValue(kind: GoalKind, v: number): string {
@@ -228,6 +283,8 @@ export function fmtGoalValue(kind: GoalKind, v: number): string {
 
 export function goalText(g: Goal): string {
   const m = GOALS[g.kind];
+  if (g.kind === 'raceTime') return `${RACE_EVENTS[g.event ?? 'drag100'].name} ≤ ${g.value.toFixed(2)} 秒`;
+  if (g.kind === 'topSpeed') return `极速 ≥ ${g.value.toFixed(0)} km/h`;
   const at = m.hasRpm ? `${Math.round(g.rpm ?? 0).toLocaleString('en-US')} rpm ` : '';
   const name = m.hasRpm ? (g.kind === 'torqueAt' ? '扭矩' : '功率') : m.name;
   return `${at}${name} ${m.dir === 'min' ? '≥' : '≤'} ${fmtGoalValue(g.kind, g.value)}`;
@@ -256,12 +313,29 @@ export interface Brief {
   plan: AcceptancePlan;
   /** The cost zero. */
   baseline: EngineConfig;
+  /** The machine for timed-run goals, and its cost zero. */
+  vehicle: VehicleConfig;
+  vehicleBaseline: VehicleConfig;
+  /** Vehicle parts 老周 may change. */
+  vehicleParts: VehiclePartId[];
+}
+
+/** Timed runs a set of goals needs. */
+export function eventsFor(goals: Goal[]): RaceEventId[] {
+  const out = new Set<RaceEventId>();
+  for (const g of goals) {
+    if (g.kind === 'raceTime') out.add(g.event ?? 'drag100');
+    if (g.kind === 'topSpeed') out.add('top');
+  }
+  return [...out];
 }
 
 /** Things nobody wants, whether they asked or not. */
 export const SAFETY: Goal[] = [
   { kind: 'piston', value: 3, must: true },
   { kind: 'rod', value: 5, must: true },
+  // Blip it and let go: it must come back to idle, not stall.
+  { kind: 'blipMin', value: 500, must: true },
 ];
 
 /** Goals in effect: the player's, plus the safety floor where they did not set one. */
@@ -350,7 +424,11 @@ export function briefForJob(job: Job, baseline: EngineConfig): Brief {
   for (const c of job.rules) take(c.spec, true);
   take(job.bonus.spec, false);
   goals.push({ kind: 'budget', value: job.budget, must: false });
+  const vehicle = clampVehicle(job.vehicle);
   return {
+    vehicle,
+    vehicleBaseline: vehicle,
+    vehicleParts: VEHICLE_PARTS.filter((p) => !job.locked?.includes(p.id as never)).map((p) => p.id),
     goals,
     parts: PARTS.filter((p) => !job.locked?.includes(p.id)).map((p) => p.id),
     ecu: true,

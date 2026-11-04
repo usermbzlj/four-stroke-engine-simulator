@@ -9,6 +9,8 @@ import { runAcceptance } from '../src/game/acceptance.ts';
 import { JOBS, grade, jobStart, type Job } from '../src/game/jobs.ts';
 import { buildCost, changedParts } from '../src/game/parts.ts';
 import { clampConfig, clampEcu } from '../src/sim/config.ts';
+import { runRace, type RaceEventId, type RaceResult } from '../src/sim/race.ts';
+import { changedVehicleParts, clampVehicle, vehicleCost } from '../src/sim/vehicle.ts';
 import { SOLUTIONS } from '../src/game/solutions.ts';
 
 function evaluate(job: Job, label: string, patch: (typeof SOLUTIONS)[string] | undefined): number {
@@ -17,10 +19,14 @@ function evaluate(job: Job, label: string, patch: (typeof SOLUTIONS)[string] | u
   const ecu = clampEcu({ ...start.ecu, ...patch?.ecu });
   const t0 = performance.now();
   const result = runAcceptance(config, ecu, job.plan);
+  const base = clampVehicle(job.vehicle);
+  const vehicle = clampVehicle({ ...base, ...patch?.vehicle });
+  const races: Partial<Record<RaceEventId, RaceResult>> = {};
+  for (const ev of job.races ?? []) races[ev] = runRace(config, ecu, vehicle, ev);
   const ms = performance.now() - t0;
-  const cost = buildCost(start.config, config);
-  const g = grade(job, { config, ecu, cost, result });
-  const parts = changedParts(start.config, config).map((p) => p.name).join('、') || '无';
+  const cost = buildCost(start.config, config) + vehicleCost(base, vehicle);
+  const g = grade(job, { config, ecu, cost, result, races });
+  const parts = [...changedParts(start.config, config), ...changedVehicleParts(base, vehicle)].map((p) => p.name).join('、') || '无';
   console.log(`  ${label}: ${'★'.repeat(g.stars)}${'☆'.repeat(3 - g.stars)}  花费 ¥${cost}（${parts}）  ${(ms / 1000).toFixed(1)}s`);
   job.rules.forEach((c, i) => console.log(`     ${g.rules[i]!.pass ? '✔' : '✘'} ${c.label} → ${g.rules[i]!.actual}`));
   console.log(`     ${g.bonus.pass ? '✔' : '✘'} [加分] ${job.bonus.label} → ${g.bonus.actual}`);

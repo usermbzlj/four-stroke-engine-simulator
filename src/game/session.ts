@@ -12,6 +12,9 @@ import { runAcceptance, type AcceptancePhase, type AcceptanceResult } from './ac
 import type { AcceptanceReply, AcceptanceRequest } from './acceptance.worker';
 import { grade, jobById, jobStart, type Grade, type Job } from './jobs';
 import { buildCost } from './parts';
+import { runRace, type RaceEventId, type RaceResult } from '../sim/race';
+import { clampVehicle, vehicleCost } from '../sim/vehicle';
+import { baseVehicle } from '../state/benchStore';
 import { awardStars } from './career';
 import { useGame, type SavedBuild } from './store';
 
@@ -24,9 +27,10 @@ function freshJobBuild(job: Job): SavedBuild {
   const start = jobStart(job);
   return {
     presetId: 'custom',
-    baseline: { name: '接单时', config: start.config, ecu: start.ecu },
+    baseline: { name: '接单时', config: start.config, ecu: start.ecu, vehicle: clampVehicle(job.vehicle) },
     config: start.config,
     ecu: start.ecu,
+    vehicle: clampVehicle(job.vehicle),
     bench: { ...DEFAULT_BENCH, ...job.plan.bench },
     runs: [],
   };
@@ -104,7 +108,7 @@ export function currentJob(): Job | undefined {
 
 export function currentCost(): number {
   const b = useBench.getState();
-  return buildCost(b.baseline.config, b.config);
+  return buildCost(b.baseline.config, b.config) + vehicleCost(baseVehicle(b.baseline, b.vehicle), b.vehicle);
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +125,7 @@ interface AcceptanceState {
   fraction: number;
   curve: [number, number][];
   result: AcceptanceResult | null;
+  races: Partial<Record<RaceEventId, RaceResult>>;
   grade: Grade | null;
   cost: number;
   /** Stars held before this run, to show what was gained. */
@@ -138,6 +143,7 @@ export const useAcceptance = create<AcceptanceState>()(() => ({
   fraction: 0,
   curve: [],
   result: null,
+  races: {},
   grade: null,
   cost: 0,
   prevStars: 0,
@@ -159,9 +165,9 @@ function getWorker(): Worker | null {
   return worker;
 }
 
-function finish(job: Job, sig: string, cost: number, result: AcceptanceResult): void {
+function finish(job: Job, sig: string, cost: number, result: AcceptanceResult, races: Partial<Record<RaceEventId, RaceResult>> = {}): void {
   const b = useBench.getState();
-  const g = grade(job, { config: b.config, ecu: b.ecu, cost, result });
+  const g = grade(job, { config: b.config, ecu: b.ecu, cost, result, races });
   const game = useGame.getState();
   const prev = game.progress[job.id];
   const better = !prev || g.stars > prev.stars || (g.stars === prev.stars && result.peakHp > prev.bestHp);
@@ -171,7 +177,7 @@ function finish(job: Job, sig: string, cost: number, result: AcceptanceResult): 
       ? { progress: { ...game.progress, [job.id]: { stars: Math.max(g.stars, prev?.stars ?? 0), bestHp: result.peakHp, bestCurve: result.curve, cost } } }
       : {}),
   });
-  useAcceptance.setState({ status: 'done', result, grade: g, fraction: 1, phase: 'done', curve: result.curve });
+  useAcceptance.setState({ status: 'done', result, races, grade: g, fraction: 1, phase: 'done', curve: result.curve });
   const paid = awardStars(job.id, job.title, g.stars);
   if (paid > 0) say('job', 'good', `客户付了工钱 ¥${paid}。`, { head: '进账：' });
 }
@@ -179,7 +185,7 @@ function finish(job: Job, sig: string, cost: number, result: AcceptanceResult): 
 export function startAcceptance(): void {
   const job = currentJob();
   if (!job || useAcceptance.getState().status === 'running') return;
-  const { config, ecu } = useBench.getState();
+  const { config, ecu, vehicle } = useBench.getState();
   const sig = buildSig(config, ecu);
   const cost = currentCost();
   const id = ++requestId;
@@ -191,6 +197,7 @@ export function startAcceptance(): void {
     fraction: 0,
     curve: [],
     result: null,
+    races: {},
     grade: null,
     cost,
     prevStars: useGame.getState().progress[job.id]?.stars ?? 0,
@@ -206,7 +213,10 @@ export function startAcceptance(): void {
     // Let the dialog paint before the main thread is busy.
     window.setTimeout(() => {
       try {
-        finish(job, sig, cost, runAcceptance(config, ecu, job.plan));
+        const result = runAcceptance(config, ecu, job.plan);
+        const races: Partial<Record<RaceEventId, RaceResult>> = {};
+        for (const ev of job.races ?? []) races[ev] = runRace(config, ecu, vehicle, ev);
+        finish(job, sig, cost, result, races);
       } catch (err) {
         useAcceptance.setState({ status: 'error', error: err instanceof Error ? err.message : String(err) });
       }
@@ -219,7 +229,7 @@ export function startAcceptance(): void {
     if (msg.type === 'progress') {
       useAcceptance.setState({ phase: msg.progress.phase, fraction: msg.progress.fraction, curve: msg.progress.curve });
     } else if (msg.type === 'done') {
-      finish(job, sig, cost, msg.result);
+      finish(job, sig, cost, msg.result, msg.races ?? {});
     } else if (msg.type === 'error') {
       useAcceptance.setState({ status: 'error', error: msg.message });
     }
@@ -227,7 +237,7 @@ export function startAcceptance(): void {
   w.onerror = (e) => {
     useAcceptance.setState({ status: 'error', error: e.message || '验收进程出错' });
   };
-  const req: AcceptanceRequest = { id, config, ecu, plan: job.plan };
+  const req: AcceptanceRequest = { id, config, ecu, plan: job.plan, ...(job.races?.length ? { alsoRaces: { vehicle, events: job.races } } : {}) };
   w.postMessage(req);
 }
 
