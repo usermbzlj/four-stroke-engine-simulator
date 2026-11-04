@@ -54,11 +54,25 @@ export function assemble(jobs: EvalJob[], outs: UnitOut[]): EvalOut[] {
   });
 }
 
-export function openPool(): Pool {
+const spawn = (): Worker => new Worker(new URL('../game/acceptance.worker.ts', import.meta.url), { type: 'module' });
+
+/** Run one unit on the page itself, yielding first so the page can paint. */
+const onPage = (u: Unit): Promise<UnitOut> =>
+  new Promise((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        resolve(runLocal(u));
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    }, 0);
+  });
+
+export function openPool(opts: { onDegraded?: () => void } = {}): Pool {
   const width = poolWidth();
   const workers: Worker[] = [];
   try {
-    for (let i = 0; i < width; i++) workers.push(new Worker(new URL('../game/acceptance.worker.ts', import.meta.url), { type: 'module' }));
+    for (let i = 0; i < width; i++) workers.push(spawn());
   } catch (err) {
     console.warn('Search workers unavailable, running on the main thread', err);
     for (const w of workers) w.terminate();
@@ -87,6 +101,9 @@ export function openPool(): Pool {
   const pending = new Set<(err: Error) => void>();
   let nextId = 1;
   let closed = false;
+  /** Workers that failed to load or crashed; past a few, the page does the work itself. */
+  let failures = 0;
+  const live = new Set(workers);
 
   const one = (unit: Unit): Promise<UnitOut> =>
     new Promise((resolve, reject0) => {
@@ -119,12 +136,49 @@ export function openPool(): Pool {
           resolve(m.type === 'done' ? { kind: 'accept', result: m.result } : m.type === 'raced' ? { kind: 'race', result: m.result } : { kind: 'task', result: m.result });
         };
         w.onerror = (e) => {
-          done();
-          reject(new Error(e.message || 'worker error'));
+          // A worker that cannot load (a stale page after the site was
+          // updated) or that crashed: replace it, and run this unit anyway.
+          e.preventDefault();
+          failures++;
+          w.terminate();
+          live.delete(w);
+          let next: Worker | null = null;
+          if (failures <= workers.length && !closed) {
+            try {
+              next = spawn();
+              live.add(next);
+            } catch {
+              next = null;
+            }
+          }
+          if (next) idle.push(next);
+          waiting.shift()?.();
+          if (failures === workers.length + 1) {
+            console.warn('Search workers failed, running on the page instead', e.message);
+            opts.onDegraded?.();
+          }
+          onPage(unit).then(
+            (out) => {
+              pending.delete(reject);
+              resolve(out);
+            },
+            (err: Error) => reject(err),
+          );
         };
         const req: AcceptanceRequest = { id, ...unit };
         w.postMessage(req);
       };
+      // Workers keep failing: do the work on the page, slower but it gets done.
+      if (failures > workers.length) {
+        onPage(unit).then(
+          (out) => {
+            pending.delete(reject);
+            resolve(out);
+          },
+          (err: Error) => reject(err),
+        );
+        return;
+      }
       if (idle.length) go();
       else waiting.push(go);
     });
@@ -135,7 +189,7 @@ export function openPool(): Pool {
     tasks: async (config, ecu, specs) => (await Promise.all(specs.map((task) => one({ config, ecu, plan: {}, quiet: true, task })))).map((o) => (o as { result: TaskOut }).result),
     close: () => {
       closed = true;
-      for (const w of workers) w.terminate();
+      for (const w of live) w.terminate();
       for (const r of [...pending]) r(new Error('closed'));
     },
   };

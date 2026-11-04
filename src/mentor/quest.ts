@@ -185,7 +185,13 @@ export async function startQuest(d: Draft): Promise<void> {
   const b = useBench.getState();
   stopFlag = false;
   const id = ++runId;
-  const mine = openPool();
+  const mine = openPool({
+    onDegraded: () =>
+      say('quest', 'warn', '后台台架起不来（多半是网站刚更新过，这个页面还是旧的），我只能在你这页里一台一台慢慢算，会很慢。先让我停下，刷新页面再来，快得多。', {
+        head: '慢下来了：',
+        actions: [{ label: '刷新页面', run: () => location.reload(), primary: true }],
+      }),
+  });
   pool = mine;
   const budget = Math.max(160, Math.min(320, 80 + 40 * mine.width));
   useQuest.setState({
@@ -222,7 +228,10 @@ export async function startQuest(d: Draft): Promise<void> {
   } catch (err) {
     if (id !== runId) return; // abandoned
     useQuest.setState({ run: null });
-    say('quest', 'warn', `出岔子了：${err instanceof Error ? err.message : String(err)}。台架没动。`);
+    const msg = err instanceof Error ? err.message : String(err);
+    say('quest', 'warn', `出岔子了：${/worker|Failed to fetch|import/i.test(msg) ? '后台台架起不来，多半是网站刚更新过、这个页面还是旧的。刷新一下页面再让我试' : msg}。你的台架没动。`, {
+      actions: [{ label: '刷新页面', run: () => location.reload(), primary: true }],
+    });
   } finally {
     mine.close();
     if (pool === mine) pool = null;

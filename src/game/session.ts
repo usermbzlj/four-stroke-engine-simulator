@@ -235,7 +235,22 @@ export function startAcceptance(): void {
     }
   };
   w.onerror = (e) => {
-    useAcceptance.setState({ status: 'error', error: e.message || '验收进程出错' });
+    // The worker could not load (a stale page after a site update) or crashed: run it here instead.
+    e.preventDefault();
+    if (id !== requestId) return;
+    worker?.terminate();
+    worker = null;
+    window.setTimeout(() => {
+      if (id !== requestId) return;
+      try {
+        const result = runAcceptance(config, ecu, job.plan);
+        const races: Partial<Record<RaceEventId, RaceResult>> = {};
+        for (const ev of job.races ?? []) races[ev] = runRace(config, ecu, vehicle, ev);
+        finish(job, sig, cost, result, races);
+      } catch (err) {
+        useAcceptance.setState({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      }
+    }, 50);
   };
   const req: AcceptanceRequest = { id, config, ecu, plan: job.plan, ...(job.races?.length ? { alsoRaces: { vehicle, events: job.races } } : {}) };
   w.postMessage(req);
