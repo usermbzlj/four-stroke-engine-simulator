@@ -79,6 +79,12 @@ export function TableEditor({ table, lo, hi, step, digits, unit, maxRpm, maxLoad
     return n ? s / n : 0;
   })();
   const [typed, setTyped] = useState('');
+  const applyTyped = (): void => {
+    if (typed !== '' && Number.isFinite(Number(typed))) {
+      apply(() => Number(typed));
+      setTyped('');
+    }
+  };
 
   return (
     <div className="tbl">
@@ -142,13 +148,13 @@ export function TableEditor({ table, lo, hi, step, digits, unit, maxRpm, maxLoad
           placeholder="设为"
           onChange={(e) => setTyped(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && typed !== '' && Number.isFinite(Number(typed))) {
-              apply(() => Number(typed));
-              setTyped('');
-            }
+            if (e.key === 'Enter') applyTyped();
           }}
           aria-label="选中格子设为"
         />
+        <button type="button" className="btn btn--small" disabled={typed === '' || !Number.isFinite(Number(typed))} onClick={applyTyped}>
+          应用
+        </button>
         <button
           type="button"
           className="btn btn--small"
@@ -169,7 +175,7 @@ export function TableEditor({ table, lo, hi, step, digits, unit, maxRpm, maxLoad
           全选
         </button>
       </div>
-      <p className="field-hint">点选格子，按住拖动或 Shift 点选一片。橙色十字是发动机此刻在表上的位置。</p>
+      <p className="field-hint">点选格子，按住拖动或 Shift 点选一片。橙色圆圈是发动机此刻在表上的位置。</p>
     </div>
   );
 }

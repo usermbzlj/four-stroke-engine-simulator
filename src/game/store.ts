@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { BenchConfig, EcuConfig, EngineConfig } from '../sim/config';
+import type { RaceEventId, RaceResult } from '../sim/race';
 import type { VehicleConfig } from '../sim/vehicle';
 import type { Baseline, DynoRun } from '../state/benchStore';
 import type { AcceptanceResult } from './acceptance';
@@ -31,6 +32,8 @@ export interface LastResult {
   sig: string;
   cost: number;
   result: AcceptanceResult;
+  /** Timed event summaries from this acceptance run (without per-frame traces). */
+  races?: Partial<Record<RaceEventId, RaceResult>>;
 }
 
 interface GameState {

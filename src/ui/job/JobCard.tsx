@@ -4,6 +4,7 @@ import { money } from '../../game/parts';
 import { resetJob, startAcceptance, useAcceptance } from '../../game/session';
 import { useGame } from '../../game/store';
 import { JOBS } from '../../game/jobs';
+import { RACE_EVENTS } from '../../sim/race';
 import { useLive } from '../../state/liveStore';
 import { Stars } from './Stars';
 import { useJob } from './useJob';
@@ -49,12 +50,12 @@ export function JobCard(): React.ReactElement | null {
         {job.rules.map((c, i) => {
           const g = grade.rules[i]!;
           const stale = c.needsTest && !fresh && last !== null;
-          const prevActual = stale ? c.eval({ config: null as never, ecu: null as never, cost: 0, result: last.result }).actual : null;
+          const prevActual = stale ? c.eval({ config: null as never, ecu: null as never, cost: 0, result: last.result, races: last.races }).actual : null;
           return (
             <li key={c.label} className={g.pass === false ? 'is-fail' : g.pass ? 'is-pass' : ''}>
               <Mark pass={g.pass} />
               <span className="job-check-label">{c.label}</span>
-              <span className="job-check-val">{prevActual ? <s title="上次验收的结果，你改过以后还没重新验收">{prevActual}</s> : g.actual}</span>
+              <span className="job-check-val">{prevActual && prevActual !== '待验收' ? <s title="上次验收的结果，你改过以后还没重新验收">{prevActual}</s> : g.actual}</span>
             </li>
           );
         })}
@@ -105,7 +106,8 @@ export function JobCard(): React.ReactElement | null {
       <p className="job-foot">
         验收在后台用一台一模一样的发动机按固定流程跑：起动、怠速、全油门扫转速{job.plan.freeRev ? '、空轰' : ''}
         {job.plan.endurance ? `、红线耐久 ${job.plan.endurance.seconds} 秒` : ''}
-        {job.plan.overrun ? '、收油放炮' : ''}。不开保护，扛不住就会坏{broken ? '' : '，但不会弄坏你台架上这台'}。
+        {job.plan.overrun ? '、收油放炮' : ''}
+        {job.races?.length ? `、赛道测试（${job.races.map((r) => RACE_EVENTS[r].name).join('、')}）` : ''}。不开保护，扛不住就会坏{broken ? '' : '，但不会弄坏你台架上这台'}。
       </p>
     </section>
   );

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import { PART_REP, VEHICLE_PART_REP } from '../game/career';
 import { PARTS, money, type PartId } from '../game/parts';
+import { useGame } from '../game/store';
 import { GOAL_ORDER, GOALS, SAFETY, type Goal, type GoalKind } from '../mentor/goals';
-import { draftNow, jobDraft, lockedParts, startQuest, useQuest, type Draft } from '../mentor/quest';
+import { draftNow, jobDraft, lockedParts, lockedVehicleParts, startQuest, useQuest, type Draft } from '../mentor/quest';
 import { poolWidth } from '../mentor/pool';
 import { useBench } from '../state/benchStore';
 import { RACE_EVENTS, RACE_ORDER, type RaceEventId } from '../sim/race';
@@ -113,7 +115,14 @@ function Editor({ initial }: { initial: Draft }): React.ReactElement {
     useQuest.setState({ editing: false });
   };
   const locked = lockedParts();
+  const vLocked = lockedVehicleParts();
+  const inSandbox = useGame((s) => s.mode === 'sandbox');
   const fromJob = jobDraft();
+  const openParts = PARTS.filter((p) => !locked.includes(p.id));
+  const openVehParts = VEHICLE_PARTS.filter((p) => !vLocked.includes(p.id));
+  const allEngPicked = openParts.length > 0 && openParts.every((p) => d.parts.includes(p.id));
+  const curVeh = d.vehicleParts ?? VEHICLE_PARTS.map((x) => x.id);
+  const allVehPicked = openVehParts.length > 0 && openVehParts.every((p) => curVeh.includes(p.id));
   const kinds = GOAL_ORDER.filter((k) => MULTI.has(k) || !d.goals.some((g) => g.kind === k));
   const setGoal = (i: number, g: Goal): void => setD({ ...d, goals: d.goals.map((x, j) => (j === i ? g : x)) });
   const add = (kind: GoalKind): void => {
@@ -191,9 +200,9 @@ function Editor({ initial }: { initial: Draft }): React.ReactElement {
             <button
               type="button"
               className="btn btn--ghost btn--small"
-              onClick={() => setD({ ...d, parts: d.parts.length >= PARTS.length - locked.length ? [] : PARTS.map((p) => p.id).filter((p) => !locked.includes(p)) })}
+              onClick={() => setD({ ...d, parts: allEngPicked ? [] : openParts.map((p) => p.id) })}
             >
-              {d.parts.length >= PARTS.length - locked.length ? '全不选' : '全选'}
+              {allEngPicked ? '全不选' : '全选'}
             </button>
           </div>
           <div className="quest-parts">
@@ -203,6 +212,7 @@ function Editor({ initial }: { initial: Draft }): React.ReactElement {
             {PARTS.map((p) => {
               const lock = locked.includes(p.id);
               const on = !lock && d.parts.includes(p.id);
+              const tip = lock ? (inSandbox ? `声望 ${PART_REP[p.id]} 解锁` : '这单不许动') : p.pitch;
               return (
                 <button
                   key={p.id}
@@ -210,27 +220,35 @@ function Editor({ initial }: { initial: Draft }): React.ReactElement {
                   className={`quest-chip${on ? ' is-on' : ''}`}
                   aria-pressed={on}
                   disabled={lock}
-                  title={lock ? '这单不许动' : p.pitch}
+                  title={tip}
                   onClick={() => togglePart(p.id)}
                 >
-                  {p.name} <small>{p.price ? money(p.price) : '免费'}</small>
+                  {p.name} <small>{lock && inSandbox ? `声望 ${PART_REP[p.id]}` : p.price ? money(p.price) : '免费'}</small>
                 </button>
               );
             })}
           </div>
           <div className="quest-sec-head">
             <h3>车上能动的（{CHASSIS[vehicleChassis].name}）</h3>
+            <button
+              type="button"
+              className="btn btn--ghost btn--small"
+              onClick={() => setD({ ...d, vehicleParts: allVehPicked ? [] : openVehParts.map((p) => p.id) })}
+            >
+              {allVehPicked ? '全不选' : '全选'}
+            </button>
           </div>
           <div className="quest-parts">
             {VEHICLE_PARTS.map((p) => {
-              const on = (d.vehicleParts ?? VEHICLE_PARTS.map((x) => x.id)).includes(p.id);
+              const lock = vLocked.includes(p.id);
+              const on = !lock && curVeh.includes(p.id);
               const toggle = (id: VehiclePartId): void => {
-                const cur = d.vehicleParts ?? VEHICLE_PARTS.map((x) => x.id);
-                setD({ ...d, vehicleParts: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] });
+                setD({ ...d, vehicleParts: curVeh.includes(id) ? curVeh.filter((x) => x !== id) : [...curVeh, id] });
               };
+              const tip = lock ? `声望 ${VEHICLE_PART_REP[p.id]} 解锁` : p.pitch;
               return (
-                <button key={p.id} type="button" className={`quest-chip${on ? ' is-on' : ''}`} aria-pressed={on} title={p.pitch} onClick={() => toggle(p.id)}>
-                  {p.name} <small>{money(p.price)}</small>
+                <button key={p.id} type="button" className={`quest-chip${on ? ' is-on' : ''}`} aria-pressed={on} disabled={lock} title={tip} onClick={() => toggle(p.id)}>
+                  {p.name} <small>{lock ? `声望 ${VEHICLE_PART_REP[p.id]}` : money(p.price)}</small>
                 </button>
               );
             })}

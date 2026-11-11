@@ -89,9 +89,11 @@ export function CarSheet(): React.ReactElement {
       <Choice
         label="车型"
         value={v.chassis}
+        disabled={mode === 'job'}
         options={(Object.keys(CHASSIS) as ChassisId[]).map((id) => ({ value: id, label: `${CHASSIS[id].name}${mode === 'sandbox' && !isChassisOpen(id) ? '（未解锁）' : ''}` }))}
-        hint={CHASSIS[v.chassis].blurb}
+        hint={mode === 'job' ? `客户自己的${CHASSIS[v.chassis].name}，只能改车上零件，不能换整车。` : CHASSIS[v.chassis].blurb}
         onChange={(id) => {
+          if (mode === 'job') return;
           if (mode === 'sandbox' && !isChassisOpen(id)) return;
           setVehicle({ ...CHASSIS[id].base });
         }}

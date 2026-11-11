@@ -160,7 +160,7 @@ export const RACE_CHECKS = {
       goal: { kind: 'raceTime', value: sec, event },
     }),
   top: (kmh: number): Check =>
-    raced(`极速 ≥ ${kmh} km/h`, 'top', (r) => ({ pass: r.topKmh >= kmh, actual: `${(Math.floor(r.topKmh * 10) / 10).toFixed(1)} km/h` }), { goal: { kind: 'topSpeed', value: kmh } }),
+    raced(`极速 ≥ ${kmh} km/h`, 'top', (r) => ({ pass: r.topKmh >= kmh, actual: `${(Math.floor(r.topKmh * 10 + 1e-9) / 10).toFixed(1)} km/h` }), { goal: { kind: 'topSpeed', value: kmh } }),
 };
 
 export const MUFFLER_TEXT: Record<MufflerType, string> = { stock: '原厂', sport: '运动', open: '直通' };

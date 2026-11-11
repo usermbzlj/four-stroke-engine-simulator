@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import { DEFAULT_BENCH, DEFAULT_PRESET } from '../sim/config';
-import { buildSig, presetBaseline, useBench } from '../state/benchStore';
+import { jobSig, presetBaseline, useBench } from '../state/benchStore';
 import { mentorEdit } from '../mentor/actions';
 import { say, useMentor } from '../mentor/store';
 import { resetStand } from '../state/engineLink';
@@ -95,7 +95,7 @@ export function resetJob(): void {
 
 /** Keep the job draft current so a reload resumes where the player was. */
 useBench.subscribe((s, prev) => {
-  if (s.config === prev.config && s.ecu === prev.ecu && s.runs === prev.runs) return;
+  if (s.config === prev.config && s.ecu === prev.ecu && s.vehicle === prev.vehicle && s.bench === prev.bench && s.runs === prev.runs) return;
   const g = useGame.getState();
   if (g.mode !== 'job' || !g.jobId) return;
   g.set({ drafts: { ...g.drafts, [g.jobId]: currentBuild() } });
@@ -165,14 +165,21 @@ function getWorker(): Worker | null {
   return worker;
 }
 
+export function compactRaces(races: Partial<Record<RaceEventId, RaceResult>>): Partial<Record<RaceEventId, RaceResult>> | undefined {
+  const entries = Object.entries(races) as [RaceEventId, RaceResult][];
+  if (entries.length === 0) return undefined;
+  return Object.fromEntries(entries.map(([k, r]) => [k, { ...r, trace: [] }])) as Partial<Record<RaceEventId, RaceResult>>;
+}
+
 function finish(job: Job, sig: string, cost: number, result: AcceptanceResult, races: Partial<Record<RaceEventId, RaceResult>> = {}): void {
   const b = useBench.getState();
   const g = grade(job, { config: b.config, ecu: b.ecu, cost, result, races });
   const game = useGame.getState();
   const prev = game.progress[job.id];
   const better = !prev || g.stars > prev.stars || (g.stars === prev.stars && result.peakHp > prev.bestHp);
+  const storedRaces = compactRaces(races);
   game.set({
-    results: { ...game.results, [job.id]: { sig, cost, result } },
+    results: { ...game.results, [job.id]: { sig, cost, result, ...(storedRaces ? { races: storedRaces } : {}) } },
     ...(better && g.stars > 0
       ? { progress: { ...game.progress, [job.id]: { stars: Math.max(g.stars, prev?.stars ?? 0), bestHp: result.peakHp, bestCurve: result.curve, cost } } }
       : {}),
@@ -186,7 +193,7 @@ export function startAcceptance(): void {
   const job = currentJob();
   if (!job || useAcceptance.getState().status === 'running') return;
   const { config, ecu, vehicle } = useBench.getState();
-  const sig = buildSig(config, ecu);
+  const sig = jobSig(config, ecu, vehicle);
   const cost = currentCost();
   const id = ++requestId;
   useAcceptance.setState({
@@ -212,10 +219,13 @@ export function startAcceptance(): void {
   if (!w) {
     // Let the dialog paint before the main thread is busy.
     window.setTimeout(() => {
+      if (id !== requestId) return;
       try {
         const result = runAcceptance(config, ecu, job.plan);
         const races: Partial<Record<RaceEventId, RaceResult>> = {};
-        for (const ev of job.races ?? []) races[ev] = runRace(config, ecu, vehicle, ev);
+        if (job.races && result.started && !result.failure) {
+          for (const ev of job.races) races[ev] = runRace(config, ecu, vehicle, ev);
+        }
         finish(job, sig, cost, result, races);
       } catch (err) {
         useAcceptance.setState({ status: 'error', error: err instanceof Error ? err.message : String(err) });
@@ -245,7 +255,9 @@ export function startAcceptance(): void {
       try {
         const result = runAcceptance(config, ecu, job.plan);
         const races: Partial<Record<RaceEventId, RaceResult>> = {};
-        for (const ev of job.races ?? []) races[ev] = runRace(config, ecu, vehicle, ev);
+        if (job.races && result.started && !result.failure) {
+          for (const ev of job.races) races[ev] = runRace(config, ecu, vehicle, ev);
+        }
         finish(job, sig, cost, result, races);
       } catch (err) {
         useAcceptance.setState({ status: 'error', error: err instanceof Error ? err.message : String(err) });

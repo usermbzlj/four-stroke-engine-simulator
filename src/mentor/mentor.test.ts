@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { EngineRunner } from '../audio/runner';
+import { PART_OF } from '../game/parts';
+import { useCareer } from '../game/career';
+import { useGame } from '../game/store';
 import { DEFAULT_BENCH, PRESETS, rodBreakRpm, valveFloatRpm, type EcuConfig, type EnginePreset } from '../sim/config';
 import { EngineCore } from '../sim/core';
+import { CHASSIS, VEHICLE_PARTS } from '../sim/vehicle';
+import { useBench } from '../state/benchStore';
 import { assessBuild, reviewFailure, safeLimiter } from './advice';
+import { isTorqueParam, noteForParam } from './params';
+import { draftNow, lockedParts, lockedVehicleParts, undoQuest, useQuest } from './quest';
 import { tuneLambda, tuneSpark, type Sample, type TunerPort } from './tuner';
 import { pick } from './voice';
 
@@ -160,5 +168,108 @@ describe('auto calibration', () => {
     const r = await tuneLambda(new CorePort(core), () => {});
     expect(r.to).toBeGreaterThanOrEqual(0.82);
     expect(r.to).toBeLessThanOrEqual(0.94);
+  });
+});
+
+describe('params & runner safety', () => {
+  it('explains every engine and vehicle part parameter and filters non-torque knobs', () => {
+    for (const k of Object.keys(PART_OF)) {
+      expect(noteForParam(`config.${k}`), `config.${k}`).toBeDefined();
+    }
+    for (const vp of VEHICLE_PARTS) {
+      for (const k of vp.keys) {
+        expect(noteForParam(`vehicle.${String(k)}`), `vehicle.${String(k)}`).toBeDefined();
+        expect(isTorqueParam(`vehicle.${String(k)}`)).toBe(false);
+      }
+    }
+    expect(noteForParam('vehicle.gear3')).toBeDefined();
+    expect(noteForParam('ecu.shiftRpm2')).toBeDefined();
+    expect(isTorqueParam('ecu.shiftRpm0')).toBe(false);
+    expect(isTorqueParam('ecu.crankLambda')).toBe(false);
+    expect(isTorqueParam('ecu.advanceOffset')).toBe(true);
+    expect(isTorqueParam('config.turboSize')).toBe(true);
+  });
+
+  it('resets active track ride cleanly on engine rebuild, restore, or raceAbort', () => {
+    const p = preset('street-250');
+    const seen: { ride: { phase: string; gear: number; kmh: number } | null } = { ride: null };
+    const runner = new EngineRunner(24000, { config: p.engine, ecu: p.ecu, bench: DEFAULT_BENCH }, false, (msg) => {
+      if (msg.type === 'snapshot' && msg.snapshot.ride) seen.ride = msg.snapshot.ride;
+    });
+    const startEngine = (): void => {
+      runner.handle({ type: 'controls', controls: { starter: true } });
+      for (let i = 0; i < 40 && runner.core.rpm < 1100; i++) runner.run(240);
+      runner.handle({ type: 'controls', controls: { starter: false } });
+      runner.run(12000);
+    };
+    startEngine();
+    runner.handle({ type: 'vehicle', vehicle: CHASSIS.street.base });
+    runner.handle({ type: 'race', event: 'drag100', rider: 'auto', countdown: 0 });
+    runner.run(24000);
+    expect(seen.ride?.phase).toBe('run');
+    expect(seen.ride?.kmh).toBeGreaterThan(1);
+    runner.handle({ type: 'rebuild', config: p.engine });
+    runner.run(500);
+    expect(seen.ride?.phase).toBe('free');
+    expect(seen.ride?.gear).toBe(0);
+    expect(seen.ride?.kmh).toBe(0);
+
+    startEngine();
+    runner.handle({ type: 'race', event: 'drag100', rider: 'auto', countdown: 0 });
+    runner.run(24000);
+    expect(seen.ride?.phase).toBe('run');
+    expect(seen.ride?.kmh).toBeGreaterThan(1);
+    runner.handle({ type: 'raceAbort' });
+    runner.run(500);
+    expect(seen.ride?.phase).toBe('free');
+    expect(seen.ride?.gear).toBe(0);
+    expect(seen.ride?.kmh).toBe(0);
+  });
+
+  it('respects sandbox reputation locks inside quest drafts and lock lists', () => {
+    const hadStorage = 'localStorage' in globalThis;
+    if (!hadStorage) {
+      const m = new Map<string, string>();
+      Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => m.set(k, v), removeItem: (k: string) => m.delete(k) },
+      });
+    }
+    const prevMode = useGame.getState().mode;
+    const prevJob = useGame.getState().jobId;
+    const prevRep = useCareer.getState().rep;
+    try {
+      useGame.setState({ mode: 'sandbox', jobId: null });
+      useBench.getState().loadPreset('street-250');
+      useCareer.setState({ rep: 0 });
+      expect(lockedParts()).toContain('turbo');
+      expect(lockedParts()).toContain('vvt');
+      expect(lockedVehicleParts()).toContain('gearbox');
+      const d0 = draftNow();
+      expect(d0.parts).not.toContain('turbo');
+      expect(d0.vehicleParts).not.toContain('gearbox');
+
+      useCareer.setState({ rep: 120 });
+      expect(lockedParts()).toEqual([]);
+      expect(lockedVehicleParts()).toEqual([]);
+
+      // Restoring a quest snapshot whose EngineConfig matches current values keeps b.config untouched
+      const beforeCfg = useBench.getState().config;
+      const beforeEcu = useBench.getState().ecu;
+      useQuest.setState({
+        undo: {
+          config: { ...beforeCfg },
+          ecu: { ...beforeEcu, idleRpm: beforeEcu.idleRpm + 100 },
+          vehicle: useBench.getState().vehicle,
+        },
+      });
+      undoQuest();
+      expect(useBench.getState().config).toBe(beforeCfg);
+      expect(useBench.getState().ecu.idleRpm).toBe(beforeEcu.idleRpm + 100);
+    } finally {
+      useQuest.setState({ undo: null });
+      useCareer.setState({ rep: prevRep });
+      useGame.setState({ mode: prevMode, jobId: prevJob });
+    }
   });
 });

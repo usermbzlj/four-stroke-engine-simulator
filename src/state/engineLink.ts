@@ -95,6 +95,7 @@ export function startRun(): void {
   const s = useLive.getState().snapshot;
   if (!s || s.status !== 'running') return;
   const r = useRace.getState();
+  if (r.live) return;
   useControls.getState().set({ brakeMode: 'off', sweeping: false });
   send({ type: 'race', event: r.event, rider: r.rider, countdown: 3 });
   r.set({ live: true });
@@ -246,7 +247,9 @@ useMentor.subscribe((s, prev) => {
 
 useBench.subscribe((s, prev) => {
   if (s.config !== prev.config) {
-    send({ type: blockChanged(prev.config, s.config) ? 'rebuild' : 'tune', config: s.config });
+    const rebuild = blockChanged(prev.config, s.config);
+    if (rebuild && useRace.getState().live) useRace.getState().set({ live: false });
+    send({ type: rebuild ? 'rebuild' : 'tune', config: s.config });
     clearPull();
   }
   if (s.ecu !== prev.ecu) send({ type: 'ecu', ecu: s.ecu });
@@ -261,6 +264,7 @@ useBench.subscribe((s, prev) => {
  */
 export function resetStand(): void {
   if (useControls.getState().sweeping) stopSweep(false);
+  if (useRace.getState().live) abortRun();
   send({ type: 'rebuild', config: useBench.getState().config });
   send({ type: 'restore' });
   useControls.getState().set({ starter: false, hand: 0, pedal: 0, sweeping: false, brakeMode: 'off', autoThrottle: null });
@@ -275,6 +279,7 @@ export function renewParts(): void {
 
 /** Fit new parts after a failure. */
 export function restoreEngine(): void {
+  if (useRace.getState().live) abortRun();
   send({ type: 'restore' });
   useControls.getState().set({ starter: false, hand: 0, pedal: 0, sweeping: false, brakeMode: 'off', autoThrottle: null });
   useLive.getState().clearFeed();

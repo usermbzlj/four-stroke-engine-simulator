@@ -1,3 +1,4 @@
+import { isTorqueParam } from '../mentor/params';
 import { displacementCc, meanPistonSpeed, overlapDeg, rodBreakRpm, valveFloatRpm, type EcuConfig, type EngineConfig } from '../sim/config';
 import { useBench } from '../state/benchStore';
 import { useControls } from '../state/controlStore';
@@ -59,7 +60,8 @@ export function LiveStrip(): React.ReactElement {
   const running = status === 'running' && m !== null;
   const torque = m ? (braked ? m.brakeTorque : m.torque) : 0;
   const hp = m ? (Math.max(0, torque) * m.rpm) / 7121 : 0;
-  const b = fresh?.before ?? null;
+  const showTorqueDelta = fresh !== null && isTorqueParam(fresh.param);
+  const b = showTorqueDelta ? fresh.before : null;
   const fair = b !== null && fresh !== null && fresh.beforeBrake === braked && Math.abs(b.rpm - (m?.rpm ?? 0)) < 150 && Math.abs(fresh.beforeThrottle - throttle) < 0.05;
   const bTorque = b ? (braked ? b.brakeTorque : b.torque) : undefined;
   const bHp = b && bTorque !== undefined ? (Math.max(0, bTorque) * b.rpm) / 7121 : undefined;
@@ -118,7 +120,15 @@ export function LiveStrip(): React.ReactElement {
         {fresh ? (
           <span className="strip-msg">
             在调 <b>{fresh.label}</b>
-            {b ? (fair ? '，变化是跟你动手前比的。' : '，转速或油门变了，变化只能参考。') : '。'}
+            {fresh.param.startsWith('vehicle.')
+              ? '（整车参数，到「赛道」或看各挡极速）。'
+              : !showTorqueDelta
+                ? '（不直接改稳态扭矩）。'
+                : b
+                  ? fair
+                    ? '，变化是跟你动手前比的。'
+                    : '，转速或油门变了，变化只能参考。'
+                  : '。'}
           </span>
         ) : (
           <span className="strip-msg">动任何一个滑块，这里会显示它带来的变化。</span>
