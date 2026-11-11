@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { PRESETS, clampConfig, clampEcu } from '../sim/config';
+import { CHASSIS, vehicleCost } from '../sim/vehicle';
+import type { RaceResult } from '../sim/race';
+import { buildSig, jobSig } from '../state/benchStore';
 import { runAcceptance, torqueAt, type AcceptanceResult } from './acceptance';
-import { C, JOBS, grade, jobStart } from './jobs';
+import { C, JOBS, RACE_CHECKS, grade, jobStart } from './jobs';
 import { PARTS, PART_OF, buildCost, changedParts } from './parts';
+import { compactRaces } from './session';
 import { SOLUTIONS } from './solutions';
 import { isUnlocked } from './store';
 
@@ -138,5 +142,56 @@ describe('job catalogue', () => {
       expect(SOLUTIONS[j.id], j.id).toBeDefined();
       for (const id of j.locked ?? []) expect(PARTS.some((p) => p.id === id)).toBe(true);
     }
+  });
+
+  it('tracks vehicle cost, job signature and race outcomes together', () => {
+    const job = JOBS.find((j) => j.id === 'topspeed')!;
+    const start = jobStart(job);
+    const vBase = CHASSIS.street.base;
+    const vFairing = { ...vBase, cdA: 0.34 };
+    expect(buildSig(start.config, start.ecu)).toBe(buildSig(start.config, start.ecu));
+    expect(jobSig(start.config, start.ecu, vBase)).not.toBe(jobSig(start.config, start.ecu, vFairing));
+
+    const cost = buildCost(start.config, start.config) + vehicleCost(vBase, vFairing);
+    expect(cost).toBe(800);
+
+    const fakeRace: RaceResult = {
+      event: 'top',
+      time: 18,
+      topKmh: 165,
+      trapKmh: 165,
+      t60ft: 2.1,
+      t100m: 5.5,
+      t100kmh: 6.2,
+      dnf: null,
+      failure: null,
+      shifts: [],
+      spinTime: 0,
+      wheelieTime: 0,
+      maxPitch: 0,
+      cutTime: 0,
+      launchRpm: 5000,
+      maxBoostKpa: 0,
+      trace: [],
+      pistonDamage: 0,
+      rodFatigue: 0,
+    };
+    const tracedRace: RaceResult = { ...fakeRace, trace: [[0, 0, 0, 1000, 0], [1, 10, 40, 6000, 1]] };
+    const compacted = compactRaces({ top: tracedRace });
+    expect(compacted?.top?.trace).toEqual([]);
+    expect(compacted?.top?.topKmh).toBe(165);
+    expect(compactRaces({})).toBeUndefined();
+
+    const g = grade(job, {
+      config: start.config,
+      ecu: start.ecu,
+      cost,
+      result: fakeResult({ coolantMax: 90 }),
+      races: compacted,
+    });
+    expect(g.passed).toBe(true);
+    expect(g.stars).toBe(3);
+    expect(RACE_CHECKS.top(165).eval({ config: start.config, ecu: start.ecu, cost, result: fakeResult(), races: compacted }).actual).toBe('165.0 km/h');
+    expect(RACE_CHECKS.top(165).eval({ config: start.config, ecu: start.ecu, cost, result: fakeResult() }).actual).toBe('待验收');
   });
 });

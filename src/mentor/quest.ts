@@ -5,14 +5,15 @@
 
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import { partOpen, vehiclePartOpen } from '../game/career';
 import { currentJob } from '../game/session';
-import { changedParts, money, PARTS, type PartId } from '../game/parts';
-import { changedVehicleParts, VEHICLE_PARTS, type VehicleConfig, type VehiclePartId } from '../sim/vehicle';
-import { baseVehicle } from '../state/benchStore';
-import { engineer } from './engineer/engineer';
-import { useBench } from '../state/benchStore';
+import { changedParts, money, partChanged, PARTS, type PartId } from '../game/parts';
+import { useGame } from '../game/store';
+import { changedVehicleParts, VEHICLE_PARTS, vehiclePartChanged, type VehicleConfig, type VehiclePartId } from '../sim/vehicle';
+import { baseVehicle, useBench } from '../state/benchStore';
 import type { EcuConfig, EngineConfig } from '../sim/config';
 import { crankForMe, mentorEdit } from './actions';
+import { engineer } from './engineer/engineer';
 import { useLive } from '../state/liveStore';
 import { briefForJob, effectiveGoals, gap, GOALS, idleCapFor, type Brief, type Goal } from './goals';
 import { openPool, type Pool } from './pool';
@@ -77,17 +78,18 @@ export function draftNow(): Draft {
     const b = briefForJob(job, useBench.getState().baseline.config);
     return { goals: b.goals, parts: b.parts, ecu: true, vehicleParts: b.vehicleParts };
   }
-  return (
-    q.sandbox ?? {
-      goals: [
-        { kind: 'peakHp', value: 20, must: true },
-        { kind: 'budget', value: 2000, must: false },
-      ],
-      parts: ALL_PARTS.filter((p) => p !== 'fuel'),
-      ecu: true,
-      vehicleParts: ALL_VEHICLE,
-    }
-  );
+  if (q.sandbox) return q.sandbox;
+  const engLocked = new Set(lockedParts());
+  const vehLocked = new Set(lockedVehicleParts());
+  return {
+    goals: [
+      { kind: 'peakHp', value: 20, must: true },
+      { kind: 'budget', value: 2000, must: false },
+    ],
+    parts: ALL_PARTS.filter((p) => p !== 'fuel' && !engLocked.has(p)),
+    ecu: true,
+    vehicleParts: ALL_VEHICLE.filter((p) => !vehLocked.has(p)),
+  };
 }
 
 export function saveDraft(d: Draft): void {
@@ -104,16 +106,29 @@ export function jobDraft(): Draft | null {
 }
 
 export function lockedParts(): PartId[] {
-  return currentJob()?.locked ?? [];
+  const job = currentJob();
+  if (job) return job.locked ?? [];
+  if (useGame.getState().mode !== 'sandbox') return [];
+  const { baseline, config } = useBench.getState();
+  return PARTS.filter((p) => !partOpen(p.id) && !partChanged(p, baseline.config, config)).map((p) => p.id);
+}
+
+export function lockedVehicleParts(): VehiclePartId[] {
+  if (useGame.getState().mode !== 'sandbox') return [];
+  const { baseline, vehicle } = useBench.getState();
+  const base = baseVehicle(baseline, vehicle);
+  return VEHICLE_PARTS.filter((p) => !vehiclePartOpen(p.id) && !vehiclePartChanged(p, base, vehicle)).map((p) => p.id);
 }
 
 function briefFrom(d: Draft): Brief {
   const job = currentJob();
   const b = useBench.getState();
   const base = job ? briefForJob(job, b.baseline.config) : null;
+  const engLocked = new Set(lockedParts());
+  const vehLocked = new Set(lockedVehicleParts());
   return {
     goals: d.goals,
-    parts: d.parts.filter((p) => !(job?.locked ?? []).includes(p)),
+    parts: d.parts.filter((p) => !engLocked.has(p)),
     ecu: d.ecu,
     lock: base?.lock ?? {},
     mufflers: base?.mufflers ?? null,
@@ -121,7 +136,7 @@ function briefFrom(d: Draft): Brief {
     baseline: b.baseline.config,
     vehicle: b.vehicle,
     vehicleBaseline: baseVehicle(b.baseline, b.vehicle),
-    vehicleParts: d.vehicleParts ?? ALL_VEHICLE,
+    vehicleParts: (d.vehicleParts ?? ALL_VEHICLE).filter((p) => !vehLocked.has(p)),
     idleCap: idleCapFor(d.goals, Math.max(b.ecu.idleRpm, b.baseline.ecu.idleRpm)),
   };
 }
@@ -168,10 +183,14 @@ export function undoQuest(): void {
   say('quest', 'say', '换回去了，还是你原来那套。');
 }
 
+function sameObj<T extends object>(a: T, b: T): boolean {
+  return (Object.keys(a) as (keyof T)[]).every((k) => a[k] === b[k]);
+}
+
 function fit(config: EngineConfig, ecu: EcuConfig, vehicle: VehicleConfig): void {
   mentorEdit(() => {
     const b = useBench.getState();
-    b.setConfig(config);
+    if (!sameObj(config, b.config)) b.setConfig(config);
     b.setEcu(ecu);
     b.setVehicle(vehicle);
   });

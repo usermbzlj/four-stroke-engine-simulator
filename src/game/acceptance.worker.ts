@@ -36,7 +36,20 @@ self.onmessage = (e: MessageEvent<AcceptanceRequest>) => {
     } else if (race) {
       post({ id, type: 'raced', result: runRace(config, ecu, race.vehicle, race.event) });
     } else {
-      const result = runAcceptance(config, ecu, plan, quiet ? undefined : (progress) => post({ id, type: 'progress', progress }));
+      const hasRaces = Boolean(alsoRaces && alsoRaces.events.length > 0);
+      const result = runAcceptance(
+        config,
+        ecu,
+        plan,
+        quiet
+          ? undefined
+          : (progress) =>
+              post({
+                id,
+                type: 'progress',
+                progress: hasRaces && progress.phase === 'done' ? { ...progress, phase: 'race', fraction: 0.9 } : progress,
+              }),
+      );
       const races: Partial<Record<RaceEventId, RaceResult>> = {};
       if (alsoRaces && result.started && !result.failure) {
         for (const ev of alsoRaces.events) races[ev] = runRace(config, ecu, alsoRaces.vehicle, ev);

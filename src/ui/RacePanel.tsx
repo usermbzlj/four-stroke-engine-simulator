@@ -73,11 +73,23 @@ export function RacePanel(): React.ReactElement {
           <div className="race-big">
             <span>{last.result.dnf ? DNF_TEXT[last.result.dnf] : scoreText(last.result)}</span>
             {best && best !== last && !last.result.dnf && !best.result.dnf && (
-              <small className={best.result.time !== null && last.result.time !== null && ev.measure === 'time' ? (last.result.time <= best.result.time ? 'is-good' : 'is-bad') : ''}>
+              <small
+                className={
+                  ev.measure === 'time' && best.result.time !== null && last.result.time !== null
+                    ? last.result.time <= best.result.time
+                      ? 'is-good'
+                      : 'is-bad'
+                    : ev.measure === 'topSpeed'
+                      ? last.result.topKmh >= best.result.topKmh
+                        ? 'is-good'
+                        : 'is-bad'
+                      : ''
+                }
+              >
                 最佳 {scoreText(best.result)}
               </small>
             )}
-            {best === last && <small className="is-good">新纪录</small>}
+            {best === last && !last.result.dnf && <small className="is-good">新纪录</small>}
           </div>
           <dl className="race-splits">
             <div><dt>60 英尺</dt><dd>{f2(last.result.t60ft)}</dd></div>

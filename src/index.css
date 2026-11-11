@@ -2509,9 +2509,13 @@ button.mode:hover {
   color: var(--ink);
 }
 .quest-chip:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   cursor: not-allowed;
   text-decoration: line-through;
+}
+.quest-chip:disabled small {
+  display: inline-block;
+  text-decoration: none;
 }
 .quest-foot {
   display: flex;

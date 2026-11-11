@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { startMentor } from './mentor/brain';
 import { startCareerHooks } from './game/careerHooks';
 import { startRaceCoach } from './mentor/raceCoach';
@@ -9,31 +9,32 @@ import { useBench } from './state/benchStore';
 import { useLink } from './state/engineLink';
 import { useLive } from './state/liveStore';
 import { useUi, type Drawer } from './state/uiStore';
-import { BuildSheet } from './ui/BuildSheet';
-import { CarSheet } from './ui/CarSheet';
-import { GarageSheet } from './ui/GarageSheet';
-import { RacePanel } from './ui/RacePanel';
-import { TrackView } from './ui/TrackView';
 import { garageTitle, useCareer } from './game/career';
 import { money } from './game/parts';
 import { ControlStrip } from './ui/ControlStrip';
-import { DynoPanel } from './ui/DynoPanel';
-import { EcuPanel } from './ui/EcuPanel';
 import { EngineView } from './ui/EngineView';
 import { EventFeed } from './ui/EventFeed';
 import { FailureReport } from './ui/FailureReport';
-import { HelpOverlay } from './ui/HelpOverlay';
-import { AcceptanceDialog } from './ui/job/AcceptanceDialog';
-import { QuestDialog } from './ui/QuestDialog';
-import { JobBoard } from './ui/job/JobBoard';
-import { JobCard } from './ui/job/JobCard';
 import { LiveStrip } from './ui/LiveStrip';
 import { MentorPanel } from './ui/MentorPanel';
 import { Readouts } from './ui/Readouts';
 import { Scope } from './ui/Scope';
 import { StartScreen } from './ui/StartScreen';
 import { Tach } from './ui/Tach';
+import { JobCard } from './ui/job/JobCard';
 import { nudgeThrottle, useBenchInput } from './ui/useBenchInput';
+
+const JobBoard = lazy(() => import('./ui/job/JobBoard').then((m) => ({ default: m.JobBoard })));
+const BuildSheet = lazy(() => import('./ui/BuildSheet').then((m) => ({ default: m.BuildSheet })));
+const EcuPanel = lazy(() => import('./ui/EcuPanel').then((m) => ({ default: m.EcuPanel })));
+const CarSheet = lazy(() => import('./ui/CarSheet').then((m) => ({ default: m.CarSheet })));
+const GarageSheet = lazy(() => import('./ui/GarageSheet').then((m) => ({ default: m.GarageSheet })));
+const DynoPanel = lazy(() => import('./ui/DynoPanel').then((m) => ({ default: m.DynoPanel })));
+const TrackView = lazy(() => import('./ui/TrackView').then((m) => ({ default: m.TrackView })));
+const RacePanel = lazy(() => import('./ui/RacePanel').then((m) => ({ default: m.RacePanel })));
+const AcceptanceDialog = lazy(() => import('./ui/job/AcceptanceDialog').then((m) => ({ default: m.AcceptanceDialog })));
+const QuestDialog = lazy(() => import('./ui/QuestDialog').then((m) => ({ default: m.QuestDialog })));
+const HelpOverlay = lazy(() => import('./ui/HelpOverlay').then((m) => ({ default: m.HelpOverlay })));
 
 const DRAWERS: { id: Drawer; label: string; key: string }[] = [
   { id: 'build', label: '改装单', key: 'Q' },
@@ -170,14 +171,26 @@ function Bench(): React.ReactElement {
           onWheel={(e) => nudgeThrottle(e.deltaY < 0 ? 0.03 : -0.03)}
           title="滚轮调手油门"
         >
-          {stage === 'track' ? <TrackView /> : <EngineView shake={shake} />}
+          {stage === 'track' ? (
+            <Suspense fallback={<div className="loading">正在铺赛道…</div>}>
+              <TrackView />
+            </Suspense>
+          ) : (
+            <EngineView shake={shake} />
+          )}
         </div>
         <aside className="stage-gauges" aria-label="仪表">
           <Tach />
           <Readouts />
           <EventFeed />
         </aside>
-        {stage === 'track' ? <RacePanel /> : <Scope />}
+        {stage === 'track' ? (
+          <Suspense fallback={null}>
+            <RacePanel />
+          </Suspense>
+        ) : (
+          <Scope />
+        )}
 
         {drawer && (
           <aside className={`drawer${drawer === 'ecu' || drawer === 'garage' ? ' drawer--wide' : ''}`} aria-label={DRAWERS.find((d) => d.id === drawer)?.label}>
@@ -197,11 +210,13 @@ function Bench(): React.ReactElement {
               <LiveStrip />
             </div>
             <div className="drawer-body">
-              {drawer === 'build' && <BuildSheet />}
-              {drawer === 'ecu' && <EcuPanel />}
-              {drawer === 'car' && <CarSheet />}
-              {drawer === 'garage' && <GarageSheet />}
-              {drawer === 'dyno' && <DynoPanel />}
+              <Suspense fallback={<div className="loading">加载面板…</div>}>
+                {drawer === 'build' && <BuildSheet />}
+                {drawer === 'ecu' && <EcuPanel />}
+                {drawer === 'car' && <CarSheet />}
+                {drawer === 'garage' && <GarageSheet />}
+                {drawer === 'dyno' && <DynoPanel />}
+              </Suspense>
             </div>
           </aside>
         )}
@@ -210,8 +225,10 @@ function Bench(): React.ReactElement {
       <ControlStrip />
 
       {failure && <FailureReport failure={failure} />}
-      <AcceptanceDialog />
-      <QuestDialog />
+      <Suspense fallback={null}>
+        <AcceptanceDialog />
+        <QuestDialog />
+      </Suspense>
     </div>
   );
 }
@@ -234,9 +251,17 @@ export default function App(): React.ReactElement {
   return (
     <>
       {view === 'home' && <StartScreen />}
-      {view === 'board' && <JobBoard />}
+      {view === 'board' && (
+        <Suspense fallback={<div className="loading">正在打开工单…</div>}>
+          <JobBoard />
+        </Suspense>
+      )}
       {view === 'bench' && (started ? <Bench /> : <div className="loading">正在接通台架…</div>)}
-      {help && <HelpOverlay />}
+      {help && (
+        <Suspense fallback={null}>
+          <HelpOverlay />
+        </Suspense>
+      )}
     </>
   );
 }

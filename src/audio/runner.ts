@@ -48,7 +48,29 @@ export class EngineRunner {
     core.alsRequest = false;
     this.veh = null;
     this.dir = null;
+    this.reported = false;
     core.controls.throttle = this.playerThrottle;
+  }
+
+  private resetRide(): void {
+    const v = this.veh;
+    if (!v) return;
+    this.dir = null;
+    this.reported = false;
+    v.gear = 0;
+    v.clutch = 0;
+    v.v = 0;
+    v.x = 0;
+    v.a = 0;
+    v.ww = 0;
+    v.pitch = 0;
+    v.pitchRate = 0;
+    v.slip = 0;
+    v.braking = true;
+    this.core.extCut = false;
+    this.core.extLimit = 0;
+    this.core.alsRequest = false;
+    this.core.controls.throttle = this.playerThrottle;
   }
 
   private ride(): RideState | null {
@@ -106,21 +128,13 @@ export class EngineRunner {
         }
         break;
       case 'raceAbort':
-        if (this.veh) {
-          this.dir = null;
-          core.extCut = false;
-          core.extLimit = 0;
-          core.alsRequest = false;
-          this.veh.clutch = 0;
-          this.veh.gear = 0;
-          this.veh.braking = true;
-          core.controls.throttle = this.playerThrottle;
-        }
+        this.resetRide();
         break;
       case 'shift':
         this.dir?.shift(cmd.dir);
         break;
       case 'rebuild':
+        this.resetRide();
         core.rebuild(cmd.config);
         this.synth?.setConfig(cmd.config);
         break;
@@ -135,6 +149,7 @@ export class EngineRunner {
         core.setBench(cmd.bench);
         break;
       case 'restore':
+        this.resetRide();
         core.restore();
         break;
       case 'renew':

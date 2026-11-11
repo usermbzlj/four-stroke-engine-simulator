@@ -67,6 +67,7 @@ export function useBenchInput(enabled: boolean): void {
         return;
       }
       if (onTrack && key === 'enter' && !e.repeat && !race.live) {
+        e.preventDefault();
         startRun();
         return;
       }
@@ -119,7 +120,6 @@ export function useBenchInput(enabled: boolean): void {
         e.preventDefault();
         nudgeThrottle(-0.02);
       } else if (/^[0-9]$/.test(key)) set({ hand: Number(key) / 10 });
-      else if (key === 'r' && useLive.getState().snapshot?.failure) restoreEngine();
     };
     const up = (e: KeyboardEvent): void => {
       const key = e.key.toLowerCase();

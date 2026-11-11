@@ -55,7 +55,7 @@ export interface SweepPoint {
   misfires: number;
 }
 
-export type AcceptancePhase = 'start' | 'idle' | 'blip' | 'freeRev' | 'sweep' | 'endurance' | 'overrun' | 'done';
+export type AcceptancePhase = 'start' | 'idle' | 'blip' | 'freeRev' | 'sweep' | 'endurance' | 'overrun' | 'race' | 'done';
 
 export const PHASE_TEXT: Record<AcceptancePhase, string> = {
   start: '起动',
@@ -65,6 +65,7 @@ export const PHASE_TEXT: Record<AcceptancePhase, string> = {
   sweep: '全油门扫转速',
   endurance: '红线耐久',
   overrun: '收油放炮',
+  race: '赛道实测',
   done: '完成',
 };
 

@@ -14,7 +14,7 @@ import { useUi, type Focus } from '../state/uiStore';
 import { applyFix, clearHalt, crankForMe, haltActions, isHalted, isMentorEdit, mentorEdit, retardSpark, wait } from './actions';
 import { assessBuild, reviewFailure, safeLimiter, type Fix, type Issue } from './advice';
 import { freshMemory, LESSON, type LessonMemory } from './lessons';
-import { PARAM_NOTES } from './params';
+import { isTorqueParam, noteForParam } from './params';
 import { addDespair, dismissKey, say, sinceSaid, useMentor, type MentorAction } from './store';
 import { Stopped, tuneLambda, tuneSpark, type Sample, type TunerPort } from './tuner';
 import * as V from './voice';
@@ -65,17 +65,6 @@ function relive(fix: Fix): Fix {
   if (mIdle && next.idleRpm !== undefined) next.idleRpm = ecu.idleRpm + Number(mIdle[1]);
   return { ...fix, ecu: next };
 }
-
-const NOT_TORQUE = new Set([
-  'config.flywheelInertia',
-  'config.radiatorCapacity',
-  'ecu.overrunFuelCut',
-  'ecu.limiterMode',
-  'ecu.idleRpm',
-  'ecu.limiterRpm',
-  'bench.coolantConditioner',
-  'bench.coolantSetpoint',
-]);
 
 function issueTone(i: Issue): 'danger' | 'warn' | 'say' {
   return i.level === 'danger' ? 'danger' : i.level === 'warn' ? 'warn' : 'say';
@@ -200,7 +189,7 @@ function explainFocus(focus: Focus | null): void {
   if (!focus || focus.param === w.lastFocusParam) return;
   w.lastFocusParam = focus.param;
   if (w.seenParams.has(focus.param) || useMentor.getState().tuning) return;
-  const note = PARAM_NOTES[focus.param];
+  const note = noteForParam(focus.param);
   if (!note) return;
   w.seenParams.add(focus.param);
   const field = focus.param.split('.')[1] as (typeof BLOCK_KEYS)[number];
@@ -213,7 +202,7 @@ function judgeResult(t: number): void {
   const focus = useUi.getState().focus;
   if (!focus?.before || w.resultFor === focus || t - w.lastChange < RESULT_S || w.lastChange * 1000 < focus.at - 50) return;
   if (useMentor.getState().tuning || w.mentorSettling) return;
-  if (NOT_TORQUE.has(focus.param)) {
+  if (!isTorqueParam(focus.param)) {
     w.resultFor = focus;
     return;
   }
@@ -642,7 +631,7 @@ export function nextLessonStep(): void {
   const next = m.lesson + 1;
   if (next >= LESSON.length) {
     m.set({ lesson: null, graduated: true });
-    say('lesson', 'good', '毕业了。接下来随便折腾，我盯着。搞不定就点「老周调一遍」——不过先自己试试，调出来的才是你的。');
+    say('lesson', 'good', '毕业了。接下来随便折腾，我盯着。搞不定就点「现场调 ECU」或「给老周定目标」——不过先自己试试，调出来的才是你的。');
     addDespair(-1);
     return;
   }
@@ -703,7 +692,7 @@ const livePort: TunerPort = {
     unsub();
     return { torque: cycles ? torque / cycles : 0, knock, cycles };
   },
-  stopped: () => cancelReason !== null || isHalted() || useLive.getState().snapshot?.status !== 'running',
+  stopped: () => cancelReason !== null || isHalted() || useUi.getState().stage === 'track' || useLive.getState().snapshot?.status !== 'running',
 };
 
 function sweep(label: string): Promise<DynoRun | null> {

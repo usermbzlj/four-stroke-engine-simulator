@@ -71,6 +71,10 @@ export function buildSig(config: EngineConfig, ecu: EcuConfig): string {
   return JSON.stringify([config, ecu]);
 }
 
+export function jobSig(config: EngineConfig, ecu: EcuConfig, vehicle: VehicleConfig): string {
+  return JSON.stringify([config, ecu, vehicle]);
+}
+
 export function presetBaseline(p: EnginePreset, vehicle: VehicleConfig = DEFAULT_VEHICLE): Baseline {
   return { name: p.name, config: p.engine, ecu: p.ecu, vehicle };
 }
